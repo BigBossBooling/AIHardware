@@ -567,3 +567,518 @@ This subsection provides the technical specifications for virtual networking com
 *   For vSwitches on Linux, start with Linux Bridge due to its ubiquity and simplicity. OVS can be a later enhancement.
 *   For vRouters on Linux, initially focus on host-based routing with iptables/nftables and `dnsmasq` for NAT and DHCP, as this is a common and well-understood pattern. A dedicated router VM is a powerful but more complex option for later.
 *   Ensure the Core Engine API allows for programmatic creation and configuration of these network topologies as defined by the user (conceptually via the Advanced Virtual Network Topology Management in Phase 2E).
+
+### F. AI CPU (vNPU/vTPU - Virtual Neural Processing Unit / Virtual Tensor Processing Unit) - Technical Specifications
+
+This subsection details the technical specifications for the virtual AI CPU (referred to broadly as vNPU/vTPU), designed to provide VMs with accelerated execution for AI/ML workloads by leveraging physical AI accelerators or specialized CPU instructions.
+
+**1. Hardware Interface Emulation:**
+
+    *   **Appearance to Guest OS:**
+        *   The vNPU/vTPU will typically appear as a **PCIe device** to the guest OS.
+        *   **Vendor/Device IDs:** A V-Architect specific Vendor ID and a set of Device IDs will be used to represent different types or capabilities of vNPU/vTPUs (e.g., one Device ID for a generic software-emulated vNPU, others for specific mediated passthrough profiles of physical hardware).
+        *   **Memory-Mapped I/O (MMIO) Regions:** The device will expose MMIO regions for:
+            *   **Control Registers:** For device discovery, capability querying, context setup, task submission, and interrupt management.
+            *   **Doorbell Registers:** For notifying the device that new tasks are available on a submission queue.
+            *   **Shared Memory Regions (Conceptual):** For command queues (submission queues - SQs, completion queues - CQs) and data exchange between the guest driver and the hypervisor backend, similar to NVMe or modern VirtIO devices.
+    *   **Interrupts:** The device will use standard PCIe interrupts (MSI or MSI-X) to notify the guest driver of task completion, errors, or other events.
+
+**2. API for Guest Interaction / Paravirtualized Interface (if not pure passthrough):**
+
+    *   **Rationale:** A standardized paravirtualized interface is preferred for mediated passthrough or software-emulated vNPUs to provide a stable API for guest drivers across different underlying hardware or emulation strategies. Pure passthrough would rely on vendor drivers in the guest.
+    *   **Interface Type (Conceptual - "VirtIO-AI-Accelerator"):** A new VirtIO-based device specification could be conceptualized for this, or a custom PCIe device interface defined. Key aspects:
+        *   **Device Discovery & Capability Negotiation:** Guest driver queries device capabilities (e.g., supported operations, model formats, memory capacity, available compute units).
+        *   **Context Management:** APIs to create, manage, and destroy execution contexts for different AI models or processes.
+        *   **Task Submission:**
+            *   Guest driver places AI tasks (e.g., pointers to model graphs, input/output tensor descriptors, execution parameters) into Submission Queues in shared memory.
+            *   Rings a doorbell register to notify the hypervisor backend.
+        *   **Task Completion:**
+            *   Hypervisor backend processes tasks and places completion events (status, output tensor locations, performance metrics) into Completion Queues in shared memory.
+            *   Raises an interrupt to notify the guest driver.
+        *   **Data Transfer:** Efficient mechanisms for transferring input/output tensor data between guest RAM and the accelerator (either physical device memory via DMA managed by hypervisor, or host RAM for software emulation). This might involve registering guest memory regions with the hypervisor.
+    *   **Data Structures for API (Conceptual):**
+        *   `AI_Task_Descriptor`: Model identifier, input tensor(s) (address, size, type), output tensor(s) buffer info, execution parameters (e.g., batch size, precision).
+        *   `AI_Completion_Event`: Task ID, status code, performance metrics, output tensor(s) metadata.
+
+**3. Backend Logic (Core Engine):**
+
+    *   **Passthrough/SR-IOV Mode:**
+        *   The Core Engine uses VFIO to assign the physical NPU/TPU PCIe device (or a Virtual Function if SR-IOV is used) directly to the VM.
+        *   The hypervisor's role is minimal, primarily managing IOMMU isolation and PCIe configuration space virtualization.
+        *   Guest OS uses vendor-specific drivers for the physical device.
+    *   **Mediated Passthrough Mode:**
+        *   **Vendor API Integration:** The Core Engine's backend interfaces with the host-level drivers and APIs of the physical AI accelerator (e.g., NVIDIA MIG manager, AMD ROCm/VITIS AI NPU scheduler, Google Cloud TPU APIs if running in GCP).
+        *   **Task Scheduling & Multiplexing:** The backend receives AI tasks from multiple VMs via the paravirtualized interface. It schedules these tasks onto the shared physical accelerator(s) based on VM priorities, requested resources, and accelerator availability. This may involve context switching on the physical accelerator.
+        *   **Resource Management:** Manages allocation of accelerator compute units, memory, and bandwidth among contending VMs.
+    *   **Optimized Software Emulation Mode (If No Physical Accelerator):**
+        *   The backend receives AI tasks and executes them on the host CPU using optimized AI libraries (e.g., Intel oneDNN, ARM Compute Library, Google XNNPACK, TensorFlow Lite runtime).
+        *   Focus on common inference operations and potentially limited training for smaller models.
+        *   Leverage host CPU vector extensions (AVX, NEON) extensively.
+    *   **DMA Management:** For modes involving physical accelerators, the backend is responsible for securely managing DMA transfers between guest RAM (via GPA to HPA translation) and the accelerator's memory or MMIO space.
+
+**4. Performance Counter Definitions (Exposed via API & Guest Interface):**
+
+    *   **Accelerator Utilization:** Percentage of time the vNPU/vTPU (or underlying physical resource) was actively processing.
+    *   **Operations Per Second (OPS/TOPS):** Relevant to the type of accelerator (e.g., INT8 TOPS, FP16 TFLOPS).
+    *   **Memory Bandwidth Usage:** Data transfer rate between guest/host and the accelerator.
+    *   **Task Latency:** Average time taken to complete an AI task.
+    *   **Context Switch Overhead (for mediated mode):** Time spent switching active models/contexts on the physical accelerator.
+    *   **Queue Lengths (SQ/CQ):** To monitor for bottlenecks in task submission/completion.
+    *   These metrics will be exposed via `GetVMStatusResponse` or a dedicated metrics RPC in `VMService`, and potentially to the guest via the paravirtualized interface for self-monitoring.
+
+**5. Configuration in `vm_config_schema.json`:**
+
+    *   The `ai_accelerated_hardware.ai_cpu_config` object will contain fields like:
+        *   `type`: (enum: "passthrough", "mediated", "software_emulated")
+        *   `physical_device_id`: (string, PCIe address for passthrough)
+        *   `mediated_profile_name`: (string, e.g., "nvidia_a100_mig_1g.10gb_profile", "google_tpu_v4_slice_small")
+        *   `emulated_performance_tier`: (enum: "low", "medium", "high" for software emulation, influencing CPU resource allocation)
+        *   `num_virtual_devices`: (integer, for scenarios where a single physical device is split into multiple virtual ones visible to the guest).
+
+**Initial Implementation Considerations:**
+*   Start with PCIe passthrough for a specific, well-supported physical AI accelerator (e.g., a common GPU in AI mode or a development board NPU). This validates the basic assignment and guest driver functionality.
+*   Develop the paravirtualized interface ("VirtIO-AI-Accelerator") incrementally, starting with basic task submission and completion for a software-emulated backend.
+*   Mediated passthrough is highly vendor-specific and will require deep integration with vendor SDKs; likely a later step.
+
+### G. AI RAM - Technical Specifications (Consolidation)
+
+This subsection consolidates the technical specifications for how V-Architect handles memory optimizations specifically beneficial for AI workloads, largely building upon the general vRAM management capabilities detailed in Section III.C. AI RAM is not a distinct type of emulated hardware but rather a set of configurations and hypervisor policies applied to standard vRAM to enhance performance for AI models.
+
+**1. Core Principles (Cross-reference Section III.C - vRAM Management):**
+
+    *   **NUMA Awareness & Locality:**
+        *   **Technical Detail:** As specified in Section III.C.5, the Core Engine MUST query host NUMA topology (nodes, CPU-memory-PCIe device locality) via `GetHostCapabilitiesResponse`.
+        *   When a VM is configured with `vram_config.ai_optimized_flags.numa_node_affinity` set to a specific host NUMA node (or when AI (Gemini) infers optimal affinity based on assigned AI accelerators like vAI-GPUs/vNPUs), the Core Engine's memory allocator MUST prioritize allocating the VM's physical RAM from that specified NUMA node.
+        *   Platform-specific APIs (e.g., `set_mempolicy` with `MPOL_BIND` on Linux) shall be used to enforce this memory placement policy for the VM's process.
+        *   Corresponding vCPUs for such VMs should also be affinitized to pCPUs within the same NUMA node by the Core Engine's scheduler to prevent remote memory access penalties.
+    *   **Large Contiguous Memory Blocks (Conceptual Hint):**
+        *   **Technical Detail:** The `vram_config.ai_optimized_flags.prefer_contiguous` flag in `VMConfig` serves as a hint to the Core Engine.
+        *   While the hypervisor typically allocates a VM's initial memory as a contiguous block in the *host's virtual address space*, true *physical* contiguity for large multi-gigabyte AI models is difficult to guarantee over extended periods due to host memory fragmentation.
+        *   The primary benefit of "AI RAM" in current implementation will stem from NUMA locality. Future research could explore advanced host physical memory defragmentation or reservation techniques if this flag is set, but this is not part of the initial specification beyond best-effort contiguous allocation at VM start.
+    *   **Host Page Size Considerations:**
+        *   While Section III.C.1 mentions investigating larger host page sizes (2MB/1GB huge pages) for guest RAM mapping, this is particularly relevant for AI RAM. If the host supports transparent huge pages (THP) or can be configured for explicit huge page allocation, and the performance benefits for AI workloads are validated, the Core Engine should attempt to use huge pages for VMs with significant AI RAM allocations to reduce TLB pressure and improve memory access speeds. This requires careful host configuration.
+
+**2. Configuration in `vm_config_schema.json` (Cross-reference):**
+
+    *   The relevant fields are within the `vram_config` object, under `ai_optimized_flags`:
+        *   `prefer_contiguous`: (boolean, default: `false`) - Hint for contiguous physical allocation.
+        *   `numa_node_affinity`: (integer or null, default: `null`) - Specifies preferred host NUMA node ID.
+    *   The AI (Gemini) through the **Virtual Hardware Recommendations (Phase 4A2)** feature is expected to set these flags appropriately when configuring a VM for AI workloads based on detected host capabilities and assigned AI accelerators.
+
+**3. Performance Monitoring for AI RAM:**
+
+    *   In addition to standard memory performance counters (page faults, bandwidth from host perspective), specific monitoring for NUMA effects could be beneficial:
+        *   **Remote Node Memory Accesses (Conceptual):** If feasible through hypervisor or host PMU counters, track the proportion of memory accesses by a VM that go to remote NUMA nodes versus its local assigned node. A high remote access rate for an AI-optimized VM would indicate sub-optimal placement or configuration.
+        *   This data would be invaluable for Gemini to refine its NUMA affinity recommendations or to alert users to potential performance issues.
+
+**Initial Implementation Considerations:**
+*   Robust NUMA topology detection on the host is the immediate priority.
+*   Implementation of NUMA-aware memory allocation policies for VMs in the Core Engine is critical.
+*   vCPU-to-pCPU affinity that respects NUMA node choices for memory is also essential.
+*   Huge page support for guest RAM is an optimization to be evaluated based on complexity and performance impact.
+*   Advanced monitoring for NUMA effects is a research/later enhancement item.
+
+### H. AI Graphics Card (vAI-GPU/NPU) - Technical Specifications
+
+This subsection details the technical specifications for the virtual AI Graphics Card (vAI-GPU), which may also represent other Neural Processing Units (NPUs) suited for AI/ML workloads. It focuses on providing VMs with high-performance access to GPU/NPU compute capabilities for AI frameworks.
+
+**1. Hardware Interface Emulation:**
+
+    *   **Appearance to Guest OS:**
+        *   Typically as a **PCIe device**.
+        *   **Vendor/Device IDs:**
+            *   For **passthrough mode**, the original physical device's Vendor/Device ID will be exposed to the guest.
+            *   For **mediated passthrough mode (vGPU profiles)**, a V-Architect specific Vendor ID or a vendor-defined vGPU Device ID (e.g., NVIDIA vGPU device IDs) will be used. This identifies the device as a virtualized AI accelerator.
+        *   **MMIO Regions & BARs:** Exposes Base Address Registers (BARs) for control registers, device memory (VRAM), and doorbells, consistent with the physical device (for passthrough) or the vGPU specification (for mediated modes).
+    *   **Interrupts:** Standard PCIe interrupts (MSI/MSI-X).
+
+**2. API for Guest Interaction / Paravirtualized Interface:**
+
+    *   **Passthrough Mode:**
+        *   The guest OS uses standard vendor-provided drivers (e.g., NVIDIA CUDA drivers, AMD ROCm drivers) for the physical GPU/NPU being passed through. No V-Architect specific paravirtualized API is involved in the data path for computation itself.
+        *   V-Architect's role is to ensure correct PCIe passthrough, IOMMU isolation, and ROM/firmware handling (as detailed in Section III.B.2 for general GPU passthrough).
+    *   **Mediated Passthrough Mode (vGPU Profiles):**
+        *   The guest OS uses vendor-provided vGPU guest drivers (e.g., NVIDIA AI Enterprise guest drivers, AMD vGPU drivers).
+        *   These guest drivers communicate with the vendor's host-side vGPU manager, which then schedules tasks on the physical GPU. V-Architect's Core Engine facilitates this by:
+            *   Setting up the vGPU instance on the physical GPU via the vendor's management APIs (e.g., `nvidia-vgpu-mgr` or equivalent).
+            *   Exposing the virtual PCIe device corresponding to the vGPU profile to the guest.
+    *   **Conceptual Paravirtualized AI Compute API (Future Enhancement - Lower Priority):**
+        *   Similar to the "VirtIO-AI-Accelerator" concept for vNPUs (Section III.F.2), a high-level paravirtualized API could be developed in the long term for common AI compute operations. This would abstract away some vendor specifics but is a significant undertaking and not part of the initial specification for vAI-GPUs, which will rely on vendor driver models.
+
+**3. Backend Logic (Core Engine):**
+
+    *   **Passthrough/SR-IOV Mode:**
+        *   Utilizes VFIO for assigning the physical GPU/NPU PCIe device or a Virtual Function (VF) to the VM.
+        *   Manages IOMMU mappings and ensures exclusive access for the VM.
+    *   **Mediated Passthrough Mode (vGPU Profiles):**
+        *   **Vendor API Integration:** The Core Engine (or a dedicated V-Architect service on the host) interfaces with the GPU vendor's vGPU management software (e.g., NVIDIA AI Enterprise host drivers, AMD ROCm host components with vGPU support).
+        *   **Profile Allocation:** When a VM requests a specific vAI-GPU profile (e.g., "nvidia_a100_20g_profile"), the Core Engine uses the vendor API to instantiate that profile on a compatible physical GPU with available resources.
+        *   **Resource Management:** The vendor's vGPU manager handles the fine-grained scheduling and multiplexing of the physical GPU's resources (compute units, VRAM, encoders/decoders) among the vGPU instances assigned to different VMs. V-Architect monitors overall resource availability.
+        *   **Licensing:** The Core Engine must pass through any licensing checks required by the vendor's vGPU solution. V-Architect will not bypass vendor licensing.
+
+**4. Performance Counter Definitions:**
+
+    *   Metrics will largely depend on what the vendor drivers and vGPU management software expose. V-Architect will aim to collect and present:
+        *   **vGPU Engine Utilization:** (e.g., graphics/compute engine load).
+        *   **vGPU Framebuffer Memory Usage:** (VRAM consumed by the vGPU instance).
+        *   **Tensor Core Activity / AI Compute Unit Utilization (if exposed by vendor tools for specific profiles).**
+        *   **Power Consumption (if exposed for the vGPU instance or allocatable portion of physical GPU).**
+        *   **Encoder/Decoder Utilization (if relevant for AI vision workloads).**
+    *   These metrics will be exposed via `GetVMStatusResponse` or a dedicated metrics RPC, and ideally correlated with specific AI workloads if possible (e.g., via tagging or process monitoring within the guest, with user consent).
+
+**5. Configuration in `vm_config_schema.json`:**
+
+    *   The `ai_accelerated_hardware.ai_graphics_card_config` object will contain fields like:
+        *   `type`: (enum: "passthrough", "mediated_vgpu")
+        *   `physical_device_id`: (string, PCIe address for passthrough, e.g., "0000:01:00.0")
+        *   `vendor_specific_profile_id`: (string, e.g., "nvidia_grid_a40-8q", "amd_firepro_s7150x2_vgpu" - names would align with vendor terminology for specific vGPU profiles suitable for AI).
+        *   `dedicated_memory_mb`: (integer, often defined by the profile but can be specified for some configurations).
+        *   `driver_options`: (array of strings, e.g., for passing specific parameters to guest drivers if necessary).
+    *   The `graphics_config` section in `VMConfig` might also be used in conjunction if the vAI-GPU also provides standard display output, or it might be distinct if the vAI-GPU is a headless compute accelerator.
+
+**Initial Implementation Considerations:**
+*   Prioritize PCIe passthrough for a selection of common, high-performance GPUs used in AI (e.g., NVIDIA Ampere/Hopper series, AMD CDNA series).
+*   For mediated passthrough, initial efforts should focus on integrating with one leading vendor's vGPU solution (e.g., NVIDIA AI Enterprise, if development licenses and hardware are accessible) as a proof of concept. This requires significant vendor-specific work.
+*   Ensure `GetHostCapabilitiesResponse` accurately reports physical GPUs suitable for AI passthrough and any recognized vGPU profiles the host can support.
+
+### I. AI Switches - Technical Specifications
+
+This subsection details the technical specifications for AI Switches, which build upon the standard Virtual Switch capabilities (defined in Section III.E.2) to provide optimized Layer 2 networking for AI workloads, particularly for high-throughput, low-latency inter-VM communication in distributed AI training/inference scenarios.
+
+**1. Relationship to Standard Virtual Switches:**
+    *   AI Switches are an enhanced mode or type of standard vSwitch. They inherit all base vSwitch functionalities (MAC learning, VLAN tagging, connection to vNICs).
+    *   The `vm_config_schema.json` for a vNIC's network attachment will allow specifying connection to an "AI Switch" instance or enabling "AI-Optimized Mode" on a standard vSwitch connection.
+
+**2. AI-Driven Traffic Shaping & QoS - API and Logic:**
+    *   **Telemetry Input to Gemini:**
+        *   AI Switches will export detailed flow-level telemetry to Google Gemini (via the V-Architect monitoring service). This includes source/destination MAC, VLAN tags, traffic volume, packet rates, and potentially (if using advanced inspection or guest-provided hints) traffic type identifiers (e.g., "RDMA for gradients," "TensorFlow data feed," "general TCP").
+        *   The exact telemetry format will be defined by the monitoring service's API.
+    *   **Policy Input from Gemini (API for Core Engine):**
+        *   Gemini will provide traffic shaping and QoS policies to the Core Engine, which then configures the AI Switch backend.
+        *   **Conceptual API (part of `CoreHypervisorService` or a dedicated `NetworkPolicyService`):**
+            ```protobuf
+            message AISwitchPolicy {
+              string ai_switch_instance_id = 1;
+              repeated TrafficRule rules = 2;
+            }
+
+            message TrafficRule {
+              string rule_id = 1;
+              FlowMatcher flow_matcher = 2; // Matches on src/dst MAC, VLAN, ethertype, potentially L4 ports or DPI hints
+              QoSParameters qos_params = 3;
+              PathPreference path_preference = 4; // e.g., prefer RDMA-capable path
+            }
+
+            message FlowMatcher {
+              string src_mac = 1;
+              string dst_mac = 2;
+              uint32 vlan_id = 3;
+              uint32 ethertype = 4;
+              // ... other L2/L3/L4 matching criteria
+            }
+
+            message QoSParameters {
+              uint32 priority = 1; // e.g., 802.1p style priority
+              uint64 min_bandwidth_bps = 2;
+              uint64 max_bandwidth_bps = 3;
+              uint32 buffer_allocation_percentage = 4; // Hint for buffer management
+            }
+
+            message PathPreference {
+              bool prefer_rdma_path = 1;
+              // ... other path hints (e.g., specific host NIC if multiple are bridged)
+            }
+
+            service NetworkPolicyService {
+              rpc ApplyAISwitchPolicy(AISwitchPolicy) returns (PolicyApplyResponse);
+            }
+            ```
+    *   **Backend Logic (AI Switch):**
+        *   The AI Switch backend (e.g., enhanced Linux bridge, OVS with programmable rules, or user-space switch) will implement mechanisms to enforce these policies:
+            *   Priority queues for high-priority AI traffic.
+            *   Bandwidth shaping/rate limiting per flow or per vNIC.
+            *   Dynamic buffer allocation.
+            *   Steering traffic over RDMA paths if available and policy dictates.
+
+**3. RDMA (Remote Direct Memory Access) Support:**
+
+    *   **Host Prerequisite:** Host NICs and network infrastructure must support RDMA (e.g., RoCEv2 or InfiniBand). Host OS drivers for RDMA must be installed and configured.
+    *   **Guest VM Configuration:**
+        *   Guest OS must have RDMA-capable drivers (e.g., for `virtio-net` if it supports RDMA offload/passthrough, or for a passed-through SR-IOV VF of an RDMA-capable NIC).
+        *   Applications within the guest (e.g., MPI libraries, NCCL for NVIDIA GPUs) must be configured to use RDMA.
+    *   **AI Switch Backend Logic for RDMA:**
+        *   **Path Discovery:** The AI Switch backend, in conjunction with host RDMA utilities, identifies RDMA-capable paths between host NICs that are part of the switch's bridge (if applicable).
+        *   **Traffic Steering:** When a `PathPreference` from Gemini indicates `prefer_rdma_path` for a matched flow, the AI Switch will attempt to direct this traffic over the RDMA path. This might involve:
+            *   For SR-IOV: Ensuring VFs assigned to communicating VMs can establish RDMA connections.
+            *   For paravirtualized RDMA (conceptual): A `virtio-rdma` like interface or extensions to `virtio-net` allowing guest to signal RDMA operations, with hypervisor facilitating secure mapping to host RDMA resources.
+        *   **Security:** IOMMU must be used to ensure memory protection for RDMA operations initiated by guests.
+
+**4. Configuration in `vm_config_schema.json`:**
+
+    *   The `network_interfaces.network_attachment` field might include an option like:
+        *   `ai_switch_id`: (string) - ID of the pre-configured AI Switch instance.
+        *   Or, a vSwitch attachment could have an `ai_optimized_mode: true` flag.
+    *   `network_interfaces.rdma_settings`:
+        *   `enabled`: (boolean, default: `false`)
+        *   `mode`: (enum: "passthrough_sriov_vf", "paravirtualized_experimental") - if different modes are supported.
+
+**Initial Implementation Considerations:**
+*   Focus first on the telemetry required by Gemini and the API for Gemini to push QoS/priority rules to an enhanced Linux bridge or OVS.
+*   RDMA support is highly advanced. Initial support might focus on SR-IOV passthrough of RDMA-capable NIC VFs to VMs, with the AI Switch being "aware" of these VFs. Paravirtualized RDMA is a research topic.
+*   Develop specific performance metrics for AI Switch throughput, latency for prioritized flows, and RDMA utilization (if applicable).
+
+### J. AI Routers - Technical Specifications
+
+This subsection details the technical specifications for AI Routers, which extend standard Virtual Router capabilities (Section III.E.3) with AI-driven intelligence for Layer 3 traffic prioritization and path selection, especially for AI workloads involving communication across different subnets or to external AI services.
+
+**1. Relationship to Standard Virtual Routers:**
+    *   AI Routers are an enhanced mode or type of standard vRouter. They inherit all base vRouter functionalities (IP routing, firewall, NAT, DHCP).
+    *   The `vm_config_schema.json` or network topology configuration will allow designating a vRouter instance as an "AI Router" or enabling "AI-Optimized Mode."
+
+**2. AI-Driven Traffic Prioritization & Routing - API and Logic:**
+
+    *   **Telemetry Input to Gemini:**
+        *   AI Routers export flow data (source/destination IP/port, protocol, traffic volume, application ID if available via DPI or hints from Phase 4C3 AI Services Gateway) to Gemini.
+        *   Network path quality metrics (latency, jitter, packet loss to key external AI service endpoints or between virtual subnets) are also collected.
+    *   **Policy Input from Gemini (API for Core Engine):**
+        *   Gemini provides routing policies and traffic prioritization rules.
+        *   **Conceptual API (extending `NetworkPolicyService`):**
+            ```protobuf
+            message AIRouterPolicy {
+              string ai_router_instance_id = 1;
+              repeated RoutingRule routing_rules = 2;
+              repeated FirewallPriorityRule firewall_priority_rules = 3; // For dynamic firewall rule adjustments based on AI needs
+            }
+
+            message RoutingRule {
+              string rule_id = 1;
+              FlowMatcherL3L4 flow_matcher = 2; // Matches on IP, port, protocol, DSCP
+              RoutePreference route_preference = 3;
+            }
+
+            message FlowMatcherL3L4 {
+              string src_ip_prefix = 1;
+              string dst_ip_prefix = 2;
+              uint32 protocol = 3; // e.g., TCP=6, UDP=17
+              uint32 src_port = 4;
+              uint32 dst_port = 5;
+              uint32 dscp_value = 6;
+            }
+
+            message RoutePreference {
+              string nexthop_gateway_override = 1; // Force specific next hop
+              string egress_interface_override = 2; // Force specific egress vNIC/physical NIC
+              uint32 dscp_remark_value = 3; // Re-mark DSCP for downstream QoS
+              uint32 priority = 4; // Higher value means higher priority route
+            }
+
+            // FirewallPriorityRule could allow Gemini to temporarily open/close ports for specific AI tasks
+            // or adjust rule strictness based on context.
+
+            service NetworkPolicyService {
+              // ... existing RPCs ...
+              rpc ApplyAIRouterPolicy(AIRouterPolicy) returns (PolicyApplyResponse);
+            }
+            ```
+    *   **Backend Logic (AI Router):**
+        *   The AI Router backend (e.g., enhanced host-based routing with dynamic iptables/nftables updates, or programmable data plane in a network VM/user-space router) implements:
+            *   Policy-Based Routing (PBR) to select nexthops or egress interfaces based on Gemini's rules.
+            *   DSCP remarking for outbound traffic.
+            *   Dynamic updates to firewall rules based on AI policies.
+            *   Integration with external service endpoint monitoring (e.g., latency probes to specific AI APIs) to feed path quality data to Gemini.
+
+**3. Integration with External AI Services (Network Path Optimization):**
+
+    *   The AI Router, guided by Gemini, can learn or be configured with optimal network paths or settings for accessing specific external AI services (e.g., Google Vertex AI, OpenAI API).
+    *   This might involve selecting a host NIC that has better peering to a cloud provider, or using specific DNS resolvers.
+
+**4. Configuration in `vm_config_schema.json`:**
+
+    *   A vRouter instance in the network topology definition can be flagged as `ai_router_enabled: true`.
+    *   Specific policies for AI-driven routing would be managed dynamically via the API from Gemini, not typically as static VM config.
+
+**Initial Implementation Considerations:**
+*   Start with telemetry collection from vRouters.
+*   Implement the API for Gemini to push PBR rules (e.g., based on source/destination IP/port) to a host-based routing backend (Linux `ip rule` and custom routing tables).
+*   DSCP remarking is a relatively straightforward initial feature.
+*   Dynamic firewall adjustments and integration with external service endpoint monitoring are more advanced.
+
+## IV. Performance Optimization & Dynamic Scaling - Technical Specifications
+
+This section details the technical specifications for features designed to optimize VM performance and enable dynamic scaling capabilities within V-Architect.
+
+### A. Live Migration - Technical Specifications
+
+This subsection outlines the technical details for live migrating running Virtual Machines between physical V-Architect hosts with minimal service interruption, including AI-driven optimizations.
+
+**1. Core Live Migration Process:**
+
+    *   **Pre-copy Iterative Memory Transfer:**
+        *   **Protocol:** TCP will be used for transferring memory pages between source and destination hosts due to its reliability. Secure connection (e.g., TLS over TCP) is mandatory.
+        *   **Dirty Page Tracking:** The hypervisor (KVM, WHP, or Core Engine) must support tracking memory pages dirtied by the VM during the pre-copy phase (e.g., KVM's dirty log).
+        *   **Iteration Algorithm:** Multiple rounds of pre-copy. Each round copies pages dirtied since the previous round. Iteration stops when the rate of dirtying is low enough that the remaining data can be copied within an acceptable pause window, or a maximum iteration count is reached. This process is influenced by AI (Gemini) for downtime minimization (see point 3).
+    *   **Stop-and-Copy Phase (VM Pause):**
+        *   VM execution is briefly paused on the source host.
+        *   Remaining dirty memory pages are transferred.
+        *   vCPU state (registers, etc. - as defined in Section III.A.4) is transferred.
+        *   Device states (for emulated and paravirtualized devices) are captured and transferred. This requires each virtual device model to support a save/restore state mechanism.
+    *   **Commit & Resume on Destination:**
+        *   VM state is restored on the destination host.
+        *   VM execution is resumed.
+        *   Network state (e.g., ARP entries on physical switches) is updated (e.g., by sending a gratuitous ARP from the VM on the new host).
+
+**2. Device State Migration:**
+
+    *   **VirtIO Devices:** VirtIO devices typically have well-defined state save/restore mechanisms as part of the VirtIO specification, which will be leveraged (e.g., for `virtio-blk`, `virtio-net`).
+    *   **Emulated Devices (e.g., IDE, e1000):** QEMU-derived or equivalent device models usually provide state save/restore capabilities.
+    *   **Passthrough Devices (PCIe DDA):** Live migration of VMs with passthrough devices is **highly complex and generally not supported** in initial V-Architect versions. It would require:
+        *   Identical hardware on source and destination hosts.
+        *   Device-specific quiesce/resume and state extraction/injection mechanisms, often vendor-proprietary and not universally available.
+        *   This is a research item for future, advanced V-Architect versions.
+    *   **vGPU / Mediated Passthrough Devices:** Live migration support depends entirely on the GPU vendor's vGPU solution. Some vendor solutions support live migration by transferring vGPU context. V-Architect will leverage vendor capabilities if available.
+
+**3. Storage Synchronization / Migration:**
+
+    *   **Shared Storage (Preferred for Live Migration):**
+        *   **Mechanism:** VMs whose virtual disk images reside on shared storage accessible by both source and destination hosts (e.g., NFS, iSCSI SAN, GlusterFS, Ceph RBD).
+        *   **Process:** Only VM memory and device state need to be migrated. The destination host takes over access to the shared disk images. Disk locking mechanisms (e.g., distributed locks if using QCOW2 on shared storage, or SAN-level LUN masking/unmasking) must be carefully managed.
+    *   **Local Storage (Migration of Disk Images - "Shared Nothing" Migration):**
+        *   **Mechanism:** If shared storage is not used, the VM's virtual disk images must also be transferred to the destination host.
+        *   **Process:**
+            *   Can occur concurrently with memory pre-copy.
+            *   Utilize block-level copy, potentially using QCOW2's ability to rebase onto a transferred base image or by transferring differential snapshots.
+            *   Technologies like `rsync` (for file-based images) or block-replication tools (e.g., `dd` over ssh, or custom block streaming) can be used, secured via TLS.
+            *   The final synchronization of disk changes occurs during the stop-and-copy phase.
+        *   **Performance Impact:** Significantly higher network bandwidth and longer migration times compared to shared storage scenarios.
+
+**4. API for Orchestration (`VMService`):**
+
+    *   `rpc PrepareMigrationTarget(PrepareMigrationTargetRequest) returns (PrepareMigrationTargetResponse)`
+        *   `PrepareMigrationTargetRequest`: `vm_id_on_source`, `vm_config_for_dest` (potentially modified by Gemini, e.g., MAC addresses if needed), `source_host_id`, `source_vm_snapshot_for_base` (if migrating disks based on a common snapshot).
+        *   `PrepareMigrationTargetResponse`: `status` (READY_FOR_DATA, FAILED), `message`, `destination_session_id`.
+        *   (This RPC would set up a "receiving" VM instance on the destination host).
+    *   `rpc InitiateMigration(InitiateMigrationRequest) returns (InitiateMigrationResponse)`
+        *   `InitiateMigrationRequest`: `vm_id`, `destination_host_id`, `destination_session_id`, `max_downtime_ms_hint` (uint32), `transfer_bandwidth_limit_mbps` (uint32), `migrate_storage` (boolean), `storage_transfer_protocol_preference` (string, e.g., "rsync_tls", "block_stream_tls").
+        *   `InitiateMigrationResponse`: `migration_job_id`, `status` (STARTED, FAILED), `message`.
+    *   `rpc QueryMigrationStatus(QueryMigrationStatusRequest) returns (QueryMigrationStatusResponse)`
+        *   `QueryMigrationStatusRequest`: `migration_job_id`.
+        *   `QueryMigrationStatusResponse`: `status` (RUNNING, FAILED, COMPLETED), `progress_percent` (uint32), `transferred_data_gb` (float), `remaining_data_gb` (float), `current_dirty_rate_mbps` (float), `message`.
+    *   `rpc FinalizeMigration(FinalizeMigrationRequest) returns (FinalizeMigrationResponse)`
+        *   `FinalizeMigrationRequest`: `migration_job_id`.
+        *   (This RPC would be called during the stop-and-copy phase to commit to the destination).
+    *   `rpc CancelMigration(CancelMigrationRequest) returns (CancelMigrationResponse)`
+
+**5. AI-Driven Optimizations (Google Gemini Inputs/Outputs):**
+
+    *   **Optimal Target Host Selection (Input to Gemini):**
+        *   List of potential destination hosts and their full `GetHostCapabilitiesResponse` data.
+        *   Source VM's `VMConfig` and current resource utilization (CPU, memory, network, AI accelerator usage).
+        *   Real-time network conditions (latency, available bandwidth) between source and potential destinations.
+    *   **Optimal Target Host Selection (Output from Gemini):**
+        *   `chosen_destination_host_id`.
+        *   Potentially adjusted `VMConfig` for the destination (e.g., if MAC addresses need to change, or if a slightly different mediated GPU profile is chosen due to availability).
+    *   **Downtime Minimization Parameters (Output from Gemini):**
+        *   Suggestions for `max_precopy_iterations`, target `dirty_page_rate_threshold_mbps` to trigger stop-and-copy. These would be fed as internal parameters to the Core Engine's migration logic.
+    *   **Migration Scheduling (Output from Gemini):**
+        *   Recommended time window to start migration based on predicted low network load or low source/destination host activity.
+
+**Initial Implementation Considerations:**
+*   Start with live migration for VMs on shared storage (NFS initially).
+*   Focus on migrating memory and VirtIO device states.
+*   Implement the core pre-copy and stop-and-copy logic.
+*   Develop the basic `InitiateMigration` and `QueryMigrationStatus` RPCs.
+*   AI-driven target selection and downtime minimization are subsequent enhancements.
+*   Live migration of local storage is a significantly more complex follow-on.
+*   Passthrough device migration is a research item.
+
+### B. "Double Specs" Feature - Technical Specifications
+
+This subsection details the technical specifications for V-Architect's unique "Double Specs" feature, allowing users to dynamically increase (and revert) key virtual hardware resources for a running VM, orchestrated by AI (Google Gemini).
+
+**1. Core Principle: Hot-Plug/Hot-Add & Dynamic QoS Adjustment:**
+    *   The feature aims to double (or significantly increase) vCPU count, vRAM, and performance limits for storage/network I/O **without requiring a VM reboot**, leveraging guest OS and hypervisor hot-plug/hot-add capabilities and dynamic Quality of Service (QoS) adjustments.
+    *   Reverting to original specs should also be a hot operation where possible.
+
+**2. Hot-Plug API Definitions (Core Engine `VMService`):**
+
+    *   **vCPU Hot-Add/Remove:**
+        *   `rpc HotPlugVCPU(HotPlugVCPURequest) returns (HotPlugVCPUResponse)`
+            *   `HotPlugVCPURequest`: `vm_id` (string), `num_vcpus_to_add` (uint32).
+            *   `HotPlugVCPUResponse`: `status` (SUCCESS, FAILED, PARTIALLY_COMPLETED), `message` (string), `current_vcpu_count` (uint32).
+        *   `rpc HotUnplugVCPU(HotUnplugVCPURequest) returns (HotUnplugVCPUResponse)`
+            *   `HotUnplugVCPURequest`: `vm_id` (string), `num_vcpus_to_remove` (uint32) or `vcpu_ids_to_remove` (list of uint32).
+            *   `HotUnplugVCPUResponse`: `status`, `message`, `current_vcpu_count`.
+        *   **Backend:** Interacts with KVM/WHP APIs for CPU hot-plug. Requires guest OS support to online/offline CPUs.
+    *   **Memory Hot-Add/Remove:**
+        *   `rpc HotAddMemory(HotAddMemoryRequest) returns (HotAddMemoryResponse)`
+            *   `HotAddMemoryRequest`: `vm_id` (string), `memory_mb_to_add` (uint64).
+            *   `HotAddMemoryResponse`: `status`, `message`, `current_memory_mb` (uint64).
+        *   `rpc HotRemoveMemory(HotRemoveMemoryRequest) returns (HotRemoveMemoryResponse)` (More complex, may rely on ballooning down first or specific hardware support like ACPI memory unplug)
+            *   `HotRemoveMemoryRequest`: `vm_id` (string), `memory_mb_to_remove` (uint64).
+            *   `HotRemoveMemoryResponse`: `status`, `message`, `current_memory_mb`.
+        *   **Backend:** Leverages ACPI memory hot-plug if supported by guest and hypervisor. For adding memory, can involve allocating new memory blocks and updating EPT/NPT mappings. Removing memory is more challenging; may initially be limited to what `virtio-balloon` can reclaim or if specific memory device unplug is supported.
+
+**3. Guest OS Requirements & Communication:**
+
+    *   **CPU Hot-Plug:**
+        *   **Linux:** Requires kernel compiled with ACPI CPU hotplug support. CPUs are typically added in an "offline" state and need to be onlined by the guest via sysfs (e.g., `echo 1 > /sys/devices/system/cpu/cpuX/online`).
+        *   **Windows Server:** Supports CPU hot-add on compatible hardware/hypervisors.
+    *   **Memory Hot-Plug:**
+        *   **Linux:** Requires kernel compiled with ACPI memory hotplug support. Added memory needs to be onlined.
+        *   **Windows Server:** Supports memory hot-add.
+    *   **V-Architect Guest Tools (Conceptual):** Lightweight, optional guest tools could facilitate smoother hot-plug operations by:
+        *   Automatically onlining added CPUs/memory.
+        *   Notifying the V-Architect management plane about successful resource recognition by the guest.
+        *   Providing a channel for the hypervisor to gracefully request CPU/memory offlining for revert operations.
+
+**4. Resource Feasibility Check Logic (Google Gemini):**
+
+    *   **Inputs to Gemini (via `CoreHypervisorService.GetHostCapabilities` and `VMService.GetVMStatus`):**
+        *   Current total and available host resources (CPU load average, free memory, available CPU cores not heavily utilized).
+        *   Target VM's current `VMConfig` (vCPU, RAM, storage/network QoS settings).
+        *   Target VM's current resource utilization (average and peak for CPU, memory, I/O).
+        *   Policy information (e.g., does user allow overcommitment for this feature?).
+    *   **Output from Gemini (to V-Architect Management Plane):**
+        *   **Feasibility Score/Boolean:** Can the "Double Specs" request be met fully, partially, or not at all?
+        *   **List of Resources that Can Be Doubled:** (e.g., CPU: Yes, RAM: Yes, Storage IOPS: No - host limit reached).
+        *   **Estimated Impact on Host:** (e.g., "Host CPU load will increase by X%", "Host free memory will drop to Y MB").
+        *   **Recommended Adjustments:** (e.g., "Can double vCPUs from 2 to 4, and RAM from 4GB to 8GB. Storage IOPS currently at max host capability.").
+    *   **Logic:** Gemini employs a model considering host headroom, VM's current utilization (doubling idle resources is less impactful than doubling already maxed-out ones), and potential impact on other running VMs (if in a shared host scenario).
+
+**5. Dynamic QoS Adjustment Mechanisms (Storage/Network):**
+
+    *   **Storage I/O (e.g., `virtio-blk`, NVMe):**
+        *   If the hypervisor backend supports I/O throttling per virtual disk (e.g., via cgroups I/O controller on Linux for file-backed disks, or LVM/storage array QoS features for block-backed), V-Architect will:
+            *   Query current IOPS/throughput limits.
+            *   Attempt to set new limits (e.g., 2x the current, up to a pre-defined maximum or what Gemini deems feasible for the host).
+        *   This will be an update to the device parameters in the Core Engine.
+    *   **Network I/O (e.g., `virtio-net`):**
+        *   If the vSwitch/vRouter backend supports traffic shaping per vNIC (e.g., Linux `tc` with HTB/TBF, OVS QoS), V-Architect will:
+            *   Query current bandwidth limits/priority.
+            *   Attempt to set new limits or increase priority.
+        *   This will be an update to the vNIC's port parameters on its attached vSwitch/vRouter.
+
+**6. AI Hardware Scaling (Mediated Passthrough):**
+
+    *   **Mechanism:** If a VM is using a mediated passthrough vAI-GPU or vNPU profile (e.g., NVIDIA vGPU).
+    *   **Process:**
+        1.  Gemini checks if larger/more capable profiles are available on the physical AI accelerator.
+        2.  If yes, and feasible, V-Architect (via Core Engine) will request the vendor's vGPU/vNPU manager on the host to:
+            *   Detach the current smaller profile from the VM (may require brief quiesce of AI tasks).
+            *   Attach a new, larger profile to the VM.
+        *   This is highly dependent on the vendor's software capabilities for dynamic profile changes. A full detach/re-attach might be required, which could be disruptive. A less disruptive approach might be to allocate more time-slices or compute units to the existing profile if the vendor manager supports it.
+    *   **Passthrough AI Hardware:** "Doubling" is not applicable as the VM already has full access.
+
+**7. Revert Operation:**
+    *   The feature must allow reverting to the original specifications.
+    *   This involves calling `HotUnplugVCPU`, `HotRemoveMemory` (or ballooning down), and resetting QoS parameters to their previous values.
+    *   Reverting AI hardware profiles would follow the reverse of the scaling-up process.
+
+**Initial Implementation Considerations:**
+*   Focus initially on CPU and Memory hot-add for Linux guests with guest tools to automate onlining.
+*   Implement basic Gemini feasibility check based on host CPU/Memory availability.
+*   Dynamic QoS for storage/network can be a subsequent enhancement, starting with simple limit adjustments.
+*   AI hardware scaling is the most complex and vendor-dependent; start with monitoring and feasibility assessment.
+*   Ensure robust error handling and rollback if any part of the "doubling" process fails.
+
+[end of technical_specifications/phase1_core_virtualization_engine.md]
