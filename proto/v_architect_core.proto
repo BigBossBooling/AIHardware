@@ -1,0 +1,310 @@
+syntax = "proto3";
+
+package v_architect_core;
+
+option go_package = "./;v_architect_core_pb"; // Adjust go_package as per actual project structure
+
+// --- VM Configuration Structures (mirroring vm_config_schema.json concepts) ---
+
+message VCPUConfig {
+  uint32 count = 1;
+  message Topology {
+    uint32 sockets = 1;
+    uint32 cores_per_socket = 2;
+    uint32 threads_per_core = 3;
+  }
+  Topology topology = 2;
+  repeated string cpu_features_passthrough = 3;
+}
+
+message VRAMConfig {
+  uint64 size_mb = 1;
+  bool memory_ballooning_enabled = 2;
+  message AIOptimizedFlags {
+    bool prefer_contiguous = 1;
+    uint32 numa_node_affinity = 2; // 0 if no specific affinity
+  }
+  AIOptimizedFlags ai_optimized_flags = 3;
+}
+
+message StorageDevice {
+  string disk_id = 1;
+  string image_path = 2;
+  enum ControllerType {
+    CONTROLLER_TYPE_UNSPECIFIED = 0;
+    VIRTIO_BLK = 1;
+    VIRTIO_SCSI = 2;
+    NVME = 3;
+    SATA = 4;
+    IDE = 5;
+  }
+  ControllerType controller_type = 3;
+  uint64 size_gb = 4;
+  bool is_boot_disk = 5;
+  bool read_only = 6;
+  enum ImageFormat {
+    IMAGE_FORMAT_UNSPECIFIED = 0;
+    QCOW2 = 1;
+    RAW = 2;
+    VMDK = 3;
+  }
+  ImageFormat format = 7;
+}
+
+message NetworkInterface {
+  string nic_id = 1;
+  string mac_address = 2; // Optional, can be auto-generated
+  enum VNICModel {
+    VNIC_MODEL_UNSPECIFIED = 0;
+    VIRTIO_NET = 1;
+    E1000 = 2;
+  }
+  VNICModel vnic_model = 3;
+  string network_attachment_id = 4; // ID of vSwitch or AI Switch
+  // Further network attachment details (e.g. "default_nat", "bridged_adapter_eth0")
+  // might be part of a separate NetworkConfig object referenced by network_attachment_id
+}
+
+message GraphicsConfig {
+  enum GraphicsType {
+    GRAPHICS_TYPE_UNSPECIFIED = 0;
+    VGA_COMPATIBLE = 1;
+    VIRTIO_GPU = 2;
+    GPU_PASSTHROUGH = 3;
+    MEDIATED_VGPU = 4;
+  }
+  GraphicsType type = 1;
+  string vgpu_profile_or_physical_id = 2; // e.g., "nvidia_a100_2g.10gb" or PCIe address
+}
+
+message AICPUConfig {
+     enum AIType {
+         AI_TYPE_UNSPECIFIED = 0;
+         PASSTHROUGH = 1;
+         MEDIATED = 2;
+         SOFTWARE_EMULATED = 3;
+     }
+     AIType type = 1;
+     string physical_device_id = 2; // For passthrough
+     string mediated_profile_name = 3; // For mediated
+     enum EmulatedPerformanceTier {
+         TIER_UNSPECIFIED = 0;
+         LOW = 1;
+         MEDIUM = 2;
+         HIGH = 3;
+     }
+     EmulatedPerformanceTier emulated_performance_tier = 4; // For software_emulated
+     uint32 num_virtual_devices = 5;
+}
+
+message AIGraphicsCardConfig {
+     // Similar structure to AICPUConfig, potentially with different profile names/types
+     enum AIType {
+         AI_GFX_TYPE_UNSPECIFIED = 0;
+         PASSTHROUGH = 1;
+         MEDIATED_VGPU = 2;
+     }
+     AIType type = 1;
+     string physical_device_id = 2;
+     string vendor_specific_profile_id = 3;
+     uint64 dedicated_memory_mb = 4;
+}
+
+message AIAcceleratedHardware {
+  AICPUConfig ai_cpu_config = 1;
+  AIGraphicsCardConfig ai_graphics_card_config = 2;
+  // AI RAM is part of VRAMConfig.AIOptimizedFlags
+  // AI Switches/Routers are part of NetworkInterface attachment
+}
+
+message VMConfig {
+  string vm_id = 1;
+  string vm_name = 2;
+  string description = 3;
+  string os_type = 4;
+  string architecture = 5; // "x86-64", "arm64"
+  VCPUConfig vcpu_config = 6;
+  VRAMConfig vram_config = 7;
+  repeated StorageDevice storage_devices = 8;
+  repeated NetworkInterface network_interfaces = 9;
+  GraphicsConfig graphics_config = 10;
+  AIAcceleratedHardware ai_accelerated_hardware = 11;
+  repeated string boot_order = 12; // List of disk_id or nic_id
+  bool virtual_tpm_enabled = 13;
+  // Add other fields like firmware_type, secure_boot_enabled etc. as needed
+}
+
+// --- Service Messages (from Phase 1 Tech Spec, Section II.A) ---
+
+message GetEngineInfoRequest {}
+message GetEngineInfoResponse {
+  string engine_version = 1;
+  string api_version = 2;
+  repeated string supported_vm_architectures = 3;
+}
+
+message HealthCheckRequest {}
+message HealthCheckResponse {
+  enum Status { HEALTHY = 0; DEGRADED = 1; UNHEALTHY = 2; }
+  Status status = 1;
+  string message = 2;
+}
+
+message ConfigureEngineRequest {
+     // Define engine configuration parameters here
+     string log_level = 1; // e.g., "INFO", "DEBUG"
+     string default_storage_path = 2;
+}
+message ConfigureEngineResponse {
+     bool success = 1;
+     string message = 2;
+}
+
+message GetHostCapabilitiesRequest {}
+message HostCapabilities { // Renamed from GetHostCapabilitiesResponse for clarity
+     message CPUInfo {
+         string model_string = 1;
+         uint32 core_count = 2;
+         uint32 thread_count = 3;
+         repeated string supported_virtualization_extensions = 4;
+     }
+     CPUInfo cpu_info = 1;
+     uint64 total_memory_gb = 2;
+     uint64 available_memory_gb = 3;
+     message StoragePoolInfo {
+         string pool_id = 1;
+         string path = 2;
+         uint64 total_space_gb = 3;
+         uint64 available_space_gb = 4;
+     }
+     repeated StoragePoolInfo storage_pools = 4;
+     message GPUInfo {
+         string gpu_id = 1; // e.g. PCIe address
+         string model_name = 2;
+         uint64 memory_mb = 3;
+         bool passthrough_capable = 4;
+         repeated string vgpu_profiles_supported = 5; // If mediated passthrough capable
+     }
+     repeated GPUInfo detected_gpus = 5;
+     message AIAcceleratorInfo {
+         string accelerator_id = 1; // e.g. PCIe address
+         string type = 2; // "NPU", "TPU", "CustomASIC"
+         string model_name = 3;
+         // Other capabilities
+     }
+     repeated AIAcceleratorInfo detected_ai_accelerators = 6;
+}
+
+message CreateVMRequest {
+  string vm_id = 1; // User can suggest, Core Engine can override/generate if empty
+  VMConfig vm_config = 2;
+}
+message CreateVMResponse {
+  string vm_id = 1; // Final vm_id
+  enum Status { SUCCESS = 0; FAILED_VALIDATION = 1; FAILED_CREATION = 2; }
+  Status status = 2;
+  string message = 3;
+}
+
+// Define other request/response messages for VMService (Delete, Start, Stop, etc.)
+// ...
+
+// --- Services ---
+service CoreHypervisorService {
+  rpc GetEngineInfo(GetEngineInfoRequest) returns (GetEngineInfoResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc ConfigureEngine(ConfigureEngineRequest) returns (ConfigureEngineResponse);
+  rpc GetHostCapabilities(GetHostCapabilitiesRequest) returns (HostCapabilities);
+}
+
+service VMService {
+  rpc CreateVM(CreateVMRequest) returns (CreateVMResponse);
+  // Define other RPCs: DeleteVM, StartVM, StopVM, PauseVM, ResumeVM, GetVMStatus, UpdateVMConfiguration, ListVMs, ManageVMMedia
+
+  // --- "Double Specs" / Hot-Plug RPCs ---
+  rpc HotPlugVCPU(HotPlugVCPURequest) returns (HotPlugVCPUResponse);
+  rpc HotUnplugVCPU(HotUnplugVCPURequest) returns (HotUnplugVCPUResponse);
+  rpc HotAddMemory(HotAddMemoryRequest) returns (HotAddMemoryResponse);
+  rpc HotRemoveMemory(HotRemoveMemoryRequest) returns (HotRemoveMemoryResponse);
+}
+
+// --- Hot-Plug/Unplug Messages ---
+
+message HotPlugVCPURequest {
+  string vm_id = 1;
+  uint32 num_vcpus_to_add = 2; // Number of vCPUs to attempt to add
+}
+
+message HotPlugVCPUResponse {
+  enum Status {
+    SUCCESS = 0;
+    FAILED = 1;
+    PARTIALLY_COMPLETED = 2;
+    VM_NOT_RUNNING = 3;
+    NOT_SUPPORTED_BY_GUEST_OS = 4; // Or hypervisor limitations
+    MAX_VCPUS_REACHED = 5;
+  }
+  Status status = 1;
+  string message = 2;
+  uint32 current_vcpu_count = 3;
+  uint32 added_vcpu_count = 4;
+}
+
+message HotUnplugVCPURequest {
+  string vm_id = 1;
+  uint32 num_vcpus_to_remove = 2; // Number of vCPUs to attempt to remove (highest IDs first)
+  // repeated uint32 vcpu_ids_to_remove = 3; // Alternative: specify exact vCPU IDs
+}
+
+message HotUnplugVCPUResponse {
+  enum Status {
+    SUCCESS = 0;
+    FAILED = 1;
+    PARTIALLY_COMPLETED = 2;
+    VM_NOT_RUNNING = 3;
+    NOT_SUPPORTED_BY_GUEST_OS = 4;
+    MIN_VCPUS_REACHED = 5;
+    VCPU_BUSY = 6; // If a specific vCPU cannot be offlined
+  }
+  Status status = 1;
+  string message = 2;
+  uint32 current_vcpu_count = 3;
+  uint32 removed_vcpu_count = 4;
+}
+
+message HotAddMemoryRequest {
+  string vm_id = 1;
+  uint64 memory_mb_to_add = 2;
+}
+
+message HotAddMemoryResponse {
+  enum Status {
+    SUCCESS = 0;
+    FAILED = 1;
+    VM_NOT_RUNNING = 3;
+    NOT_SUPPORTED_BY_GUEST_OS = 4; // Or hypervisor limitations
+    MAX_MEMORY_REACHED = 5; // Or no available memory slots
+  }
+  Status status = 1;
+  string message = 2;
+  uint64 current_memory_mb = 3;
+  uint64 added_memory_mb = 4;
+}
+
+message HotRemoveMemoryRequest { // Highly conceptual, relies on advanced guest/hypervisor support
+  string vm_id = 1;
+  uint64 memory_mb_to_remove = 2;
+}
+
+message HotRemoveMemoryResponse {
+  enum Status {
+    SUCCESS = 0;
+    FAILED = 1;
+    NOT_SUPPORTED = 2;
+    VM_NOT_RUNNING = 3;
+  }
+  Status status = 1;
+  string message = 2;
+  uint64 current_memory_mb = 3;
+  uint64 removed_memory_mb = 4;
+}
