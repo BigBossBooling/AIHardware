@@ -1,141 +1,160 @@
+// +build linux
+
 package core_engine
 
 import (
 	"fmt"
+	"os" // For os.Getuid() and os.Stat() if used to skip tests
 	"testing"
 
-	// Assuming pb types are generated and accessible
-	pb "github.com/V-Architect/v-architect-core/core_engine/pb"
+	pb "github.com/V-Architect/v-architect-core/proto" // Updated import path
 	// "github.com/stretchr/testify/assert"
 	// "github.com/stretchr/testify/require"
 )
 
-// TestNewKVMHypervisorSuccess conceptually tests KVMHypervisor creation.
-// In a real environment, this test would need access to /dev/kvm or a mocked KVM interface.
-func TestNewKVMHypervisorSuccess(t *testing.T) {
-	// require := require.New(t) // For testify assertions
-	// assert := assert.New(t)   // For testify assertions
-	fmt.Println("Conceptual Test: TestNewKVMHypervisorSuccess - START")
+// TestNewKVMHypervisor_Integration attempts to initialize KVM.
+// This test WILL FAIL if KVM is not available or user lacks permissions.
+// It should ideally be tagged as an integration test or run in an environment where KVM is guaranteed.
+func TestNewKVMHypervisor_Integration(t *testing.T) {
+	fmt.Println("Conceptual Integration Test: TestNewKVMHypervisor_Integration - START")
 
-	// Since NewKVMHypervisor() uses placeholders for actual KVM interaction,
-	// this test will "pass" if the placeholder logic executes without Go panics.
-	// A real test would require a KVM-enabled environment or extensive mocking.
+	// Skip if not running in an environment expected to have KVM available for actual tests
+	if os.Getenv("CI_SKIP_KVM_INTEGRATION_TESTS") == "true" {
+		t.Skip("Skipping KVM integration test due to CI_SKIP_KVM_INTEGRATION_TESTS=true")
+		return
+	}
+	if _, err := os.Stat("/dev/kvm"); os.IsNotExist(err) {
+		t.Skipf("Skipping KVM integration test: /dev/kvm not found. KVM module likely not loaded or KVM not supported.")
+		return
+	}
+	// A check for permissions (e.g., os.Getuid() == 0 or member of 'kvm' group) might also be warranted.
 
-	hypervisor, err := NewKVMHypervisor()
-
-	// require.NoError(err, "NewKVMHypervisor should not return an error in a conceptual success case")
+	h, err := NewKVMHypervisor()
 	if err != nil {
-		t.Fatalf("NewKVMHypervisor() returned error: %v, expected nil for conceptual success", err)
+		t.Fatalf("NewKVMHypervisor() failed: %v. Ensure KVM is enabled, kernel modules (kvm, kvm_intel/kvm_amd) are loaded, and user has permissions for /dev/kvm.", err)
 	}
-	// require.NotNil(hypervisor, "NewKVMHypervisor should return a non-nil hypervisor instance")
-	if hypervisor == nil {
-		t.Fatalf("NewKVMHypervisor() returned nil hypervisor instance")
-	}
-
-	// assert.Equal(KVM_API_VERSION_EXPECTED, hypervisor.apiVersion, "KVM API version should match expected")
-	if hypervisor.apiVersion != KVM_API_VERSION_EXPECTED {
-		t.Errorf("Expected KVM API version %d, got %d", KVM_API_VERSION_EXPECTED, hypervisor.apiVersion)
+	if h == nil {
+		t.Fatal("NewKVMHypervisor() returned nil hypervisor instance despite no error.")
 	}
 
-	// Check if critical capabilities were marked as supported (as per placeholder logic)
-	// assert.True(hypervisor.kvmCapabilities["USER_MEMORY"], "USER_MEMORY capability should be true (placeholder)")
-	if !hypervisor.kvmCapabilities["USER_MEMORY"] {
-		t.Errorf("Expected USER_MEMORY capability to be true (placeholder), got false")
+	if h.apiVersion != KVM_API_VERSION_EXPECTED {
+		t.Errorf("Expected KVM API version %d, got %d", KVM_API_VERSION_EXPECTED, h.apiVersion)
 	}
-	// assert.True(hypervisor.kvmCapabilities["IRQCHIP"], "IRQCHIP capability should be true (placeholder)")
-	if !hypervisor.kvmCapabilities["IRQCHIP"] {
-		t.Errorf("Expected IRQCHIP capability to be true (placeholder), got false")
+	if h.vcpuMmapMinSize <= 0 {
+		t.Errorf("Expected positive vcpuMmapMinSize, got %d", h.vcpuMmapMinSize)
 	}
 
-	// Clean up by closing the conceptual KVM fd
-	// errClose := hypervisor.Close()
-	// require.NoError(errClose, "Closing hypervisor should not produce an error")
-	if errClose := hypervisor.Close(); errClose != nil {
-		t.Errorf("hypervisor.Close() returned error: %v", errClose)
+	// Check for a critical capability that should exist.
+	if supported, exists := h.kvmCapabilities["USER_MEMORY"]; !exists || !supported {
+		t.Errorf("KVM_CAP_USER_MEMORY not reported as supported or check missing. Capabilities: %v", h.kvmCapabilities)
 	}
 
-	fmt.Println("Conceptual Test: TestNewKVMHypervisorSuccess - PASSED (using conceptual stubs)")
+	errClose := h.Close()
+	if errClose != nil {
+		t.Errorf("h.Close() failed: %v", errClose)
+	}
+
+	fmt.Println("Conceptual Integration Test: TestNewKVMHypervisor_Integration - PASSED (conceptually, relies on host KVM setup)")
 }
 
-func TestCreateKVMVMSuccess(t *testing.T) {
-	// require := require.New(t) // For testify assertions
-	// assert := assert.New(t)   // For testify assertions
-	fmt.Println("Conceptual Test: TestCreateKVMVMSuccess - START")
+func TestKVMHypervisor_CreateVM_Integration(t *testing.T) {
+	fmt.Println("Conceptual Integration Test: TestKVMHypervisor_CreateVM_Integration - START")
 
-	hypervisor, err := NewKVMHypervisor() // Assuming this works based on the previous test
-	// require.NoError(err, "Prerequisite NewKVMHypervisor failed")
-	// require.NotNil(hypervisor)
-	if err != nil {
-		t.Fatalf("Prerequisite NewKVMHypervisor failed: %v", err)
-	}
-	if hypervisor == nil {
-		t.Fatalf("Prerequisite NewKVMHypervisor returned nil")
-	}
-	defer hypervisor.Close()
-
-	// Create a dummy VMConfig for testing CreateVM.
-	// Only essential fields for CreateVM's conceptual logic are needed.
-	dummyPbConfig := &pb.VMConfig{
-		VmId:   "test-vm-for-create-001",
-		VmName: "MyTestVM",
-		// Other fields can be default or nil for this conceptual test,
-		// as CreateVM in KVMHypervisor doesn't deeply inspect config yet.
+	if _, errOs := os.Stat("/dev/kvm"); os.IsNotExist(errOs) {
+		t.Skipf("Skipping KVM integration test: /dev/kvm not found.")
+		return
 	}
 
-	vmFd, errCreate := hypervisor.CreateVM(dummyPbConfig.VmId, dummyPbConfig)
-	// require.NoError(errCreate, "CreateVM should succeed in a conceptual success case")
+	h, err := NewKVMHypervisor()
+	if err != nil { t.Fatalf("NewKVMHypervisor() failed for CreateVM test: %v", err)}
+	if h == nil { t.Fatal("NewKVMHypervisor() returned nil for CreateVM test") }
+	defer h.Close()
+
+	// Create a minimal dummy VMConfig for testing CreateVM.
+	dummyConfig := &pb.VMConfig{
+		VmId:   "test-vm-id-integration-002", // Ensure VmId is present
+		VmName: "MyTestVM_Integration_Create",
+		// Other fields can be default/nil as CreateVM in KVMHypervisor primarily uses vmID for logging.
+		// For a more robust test, ensure config is valid enough if CreateVM starts using it.
+		VcpuConfig: &pb.VCPUConfig{Count: 1},
+		VramConfig: &pb.VRAMConfig{SizeMb: 128},
+		Architecture: pb.VirtualHardwareArch_X86_64,
+	}
+
+	vmFd, vcpuMmapSize, errCreate := h.CreateVM(dummyConfig) // Pass config
 	if errCreate != nil {
-		t.Fatalf("hypervisor.CreateVM() returned error: %v", errCreate)
+		t.Fatalf("h.CreateVM() failed: %v", errCreate)
 	}
-	// require.Greater(vmFd, 0, "VM FD should be a positive integer (placeholder value)")
-	if vmFd <= 0 { // Placeholder FDs are positive in the conceptual code
-		t.Errorf("Expected a positive VM FD (placeholder), got %d", vmFd)
+	if vmFd <= 0 {
+		t.Errorf("Expected valid VM FD (>0), got %d", vmFd)
 	}
-	fmt.Printf("Conceptual Test: CreateVM returned conceptual vmFd: %d\n", vmFd)
+	if vcpuMmapSize <= 0 {
+		t.Errorf("Expected valid vcpuMmapSize (>0), got %d", vcpuMmapSize)
+	}
+	fmt.Printf("Conceptual Integration Test: CreateVM returned conceptual vmFd: %d, vcpuMmapSize: %d\n", vmFd, vcpuMmapSize)
 
-	// Conceptual: In a real test, one might try a simple ioctl on vmFd to verify it's a KVM VM fd.
-	// For cleanup, close the conceptual VM fd.
-	// errCloseVM := syscall.Close(vmFd) // This would fail as vmFd is not a real FD.
-	// Instead, use the hypervisor's method if it exists, or rely on test cleanup.
-	errCloseVM := hypervisor.CloseVMContext(vmFd)
-	// require.NoError(errCloseVM, "Closing VM context should not produce an error")
+	errCloseVM := h.CloseVMContext(vmFd)
 	if errCloseVM != nil {
-		t.Errorf("hypervisor.CloseVMContext() for vmFd %d returned error: %v", vmFd, errCloseVM)
+		t.Errorf("h.CloseVMContext() for vmFd %d returned error: %v", vmFd, errCloseVM)
 	}
 
-	fmt.Println("Conceptual Test: TestCreateKVMVMSuccess - PASSED (using conceptual stubs)")
+	fmt.Println("Conceptual Integration Test: TestKVMHypervisor_CreateVM_Integration - PASSED (conceptually, relies on host KVM setup)")
 }
 
-// Add more tests:
-// - TestNewKVMHypervisorFailure (e.g., if /dev/kvm is inaccessible - hard to test without system manipulation)
-// - TestCreateKVMVMFailure (e.g., if KVM_CREATE_VM ioctl fails - requires mocking ioctl layer)
-// - TestKVMHypervisorGetHostCapabilities (checking if it returns expected conceptual data)
-// - TestKVMHypervisorCheckExtension (for various known and unknown extensions)
-
-func TestKVMHypervisorGetHostCapabilities(t *testing.T) {
-	fmt.Println("Conceptual Test: TestKVMHypervisorGetHostCapabilities - START")
-	hypervisor, err := NewKVMHypervisor()
-	if err != nil {
-		t.Fatalf("Prerequisite NewKVMHypervisor failed: %v", err)
-	}
-	if hypervisor == nil {
-		t.Fatalf("Prerequisite NewKVMHypervisor returned nil")
-	}
-	defer hypervisor.Close()
-
-	caps, err := hypervisor.GetHostCapabilities()
-	if err != nil {
-		t.Fatalf("GetHostCapabilities returned error: %v", err)
-	}
-	if caps == nil {
-		t.Fatalf("GetHostCapabilities returned nil capabilities")
+func TestKVMHypervisor_GetHostCapabilities_Integration(t *testing.T) {
+    fmt.Println("Conceptual Integration Test: TestKVMHypervisor_GetHostCapabilities_Integration - START")
+    if _, errOs := os.Stat("/dev/kvm"); os.IsNotExist(errOs) {
+		t.Skipf("Skipping KVM integration test: /dev/kvm not found.")
+		return
 	}
 
-	if caps.KVMAPIVersion != KVM_API_VERSION_EXPECTED {
-		t.Errorf("Expected KVM API version %d in capabilities, got %d", KVM_API_VERSION_EXPECTED, caps.KVMAPIVersion)
+    h, err := NewKVMHypervisor()
+    if err != nil { t.Fatalf("NewKVMHypervisor() failed: %v", err) }
+    if h == nil { t.Fatal("NewKVMHypervisor() returned nil") }
+    defer h.Close()
+
+    caps, errCaps := h.GetHostCapabilities()
+    if errCaps != nil { t.Fatalf("GetHostCapabilities() failed: %v", errCaps) }
+    if caps == nil { t.Fatal("GetHostCapabilities() returned nil") }
+
+    if !caps.GetKvmAvailable() { // Using getter for protobuf bool field
+        t.Errorf("Expected KVM to be available, but GetKvmAvailable() is false")
+    }
+    // Check one of the KVM capabilities from the string list
+    foundUserMemCap := false
+    for _, capName := range caps.GetKvmCapabilitiesPresent() {
+        if capName == "USER_MEMORY" {
+            foundUserMemCap = true
+            break
+        }
+    }
+    if !foundUserMemCap {
+        t.Errorf("Expected 'USER_MEMORY' in KvmCapabilitiesPresent, got %v", caps.GetKvmCapabilitiesPresent())
+    }
+    // assert.NotEmpty(t, caps.GetCpuInfo().GetModelString(), "CPUInfo.ModelString should not be empty")
+    if caps.GetCpuInfo().GetModelString() == "" {
+		t.Error("CPUInfo.ModelString is empty in capabilities")
 	}
-	if supported, ok := caps.KVMCapabilities["USER_MEMORY"]; !ok || !supported {
-		t.Errorf("Expected USER_MEMORY to be true in KVMCapabilities, found: %t (ok: %t)", supported, ok)
+
+
+    fmt.Println("Conceptual Integration Test: TestKVMHypervisor_GetHostCapabilities_Integration - PASSED (basic checks on conceptual data)")
+}
+
+func TestKVMHypervisor_GetKVMRunSize_Integration(t *testing.T) {
+    fmt.Println("Conceptual Integration Test: TestKVMHypervisor_GetKVMRunSize_Integration - START")
+    if _, errOs := os.Stat("/dev/kvm"); os.IsNotExist(errOs) {
+		t.Skipf("Skipping KVM integration test: /dev/kvm not found.")
+		return
 	}
-	fmt.Println("Conceptual Test: TestKVMHypervisorGetHostCapabilities - PASSED (basic checks on conceptual data)")
+    h, err := NewKVMHypervisor()
+    if err != nil { t.Fatalf("NewKVMHypervisor() failed: %v", err) }
+    if h == nil { t.Fatal("NewKVMHypervisor() returned nil") }
+    defer h.Close()
+
+    size, errSize := h.GetKVMRunSize()
+    if errSize != nil {t.Fatalf("GetKVMRunSize() failed: %v", errSize)}
+    if size <= 0 {t.Errorf("Expected positive KVM run size, got %d", size)}
+
+    fmt.Printf("Conceptual Integration Test: GetKVMRunSize returned: %d\n", size)
+    fmt.Println("Conceptual Integration Test: TestKVMHypervisor_GetKVMRunSize_Integration - PASSED")
 }

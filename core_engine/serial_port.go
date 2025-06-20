@@ -3,9 +3,11 @@ package core_engine
 import (
 	"fmt"
 	"os" // Used for os.Stdout conceptually
-	// "io" // Would be used for dev.output, dev.input
+	// "io" // Would be used for dev.output, dev.input if using file/PTY backend
 	// "github.com/creack/pty" // For PTY creation if that backend is chosen
-	// "sync" // For mutex if register access needs to be thread-safe for complex state
+	"sync" // For mutex if register access needs to be thread-safe for complex state
+
+	pb "github.com/V-Architect/v-architect-core/proto" // Import generated protobuf types
 )
 
 // Standard I/O port offsets for a 8250/16550 UART
@@ -28,229 +30,263 @@ const (
 	UART_LSR_TX_EMPTY   = 0x20 // Transmitter Holding Register is empty (ready for next char)
 	UART_LSR_TX_IDLE    = 0x40 // Transmitter is empty and line is idle
 
+	// Default I/O Base addresses for common COM ports
 	DEFAULT_SERIAL_IO_BASE_COM1 = 0x3F8
 	DEFAULT_SERIAL_IO_BASE_COM2 = 0x2F8
-	// ... other standard COM port bases
+	DEFAULT_SERIAL_IO_BASE_COM3 = 0x3E8
+	DEFAULT_SERIAL_IO_BASE_COM4 = 0x2E8
 )
 
 // SerialPortDevice represents an emulated serial port (e.g., 8250/16550 UART).
 type SerialPortDevice struct {
-	id         string
-	ioBaseAddr uint16
-	// output     io.Writer // Where the serial output goes (e.g., os.Stdout, a PTY master)
-	// input      io.Reader // Where serial input comes from (e.g., a PTY master) - for later input handling
+	ID         string
+	Config     *pb.SerialPortConfig // From VMConfig
+	HostBackend interface{} // e.g., *os.File for stdio/file, or a PTY backend later
 
-	// Registers (simplified for this conceptual step)
-	// For RBR/THR, we don't need to store THR content as it's immediately "sent".
-	// RBR would hold a byte if input is implemented and data has arrived.
-	ier byte // Interrupt Enable Register
-	iir byte // Interrupt Identification Register (primarily to show "no interrupt pending")
-	fcr byte // FIFO Control Register (written to same offset as IIR)
-	lcr byte // Line Control Register
-	mcr byte // Modem Control Register
-	lsr byte // Line Status Register
-	msr byte // Modem Status Register
-	scr byte // Scratch Register
+	guestIoBaseAddr uint16 // e.g., common COM1 port 0x3F8
+	irq             uint32 // e.g., 4 for COM1
 
-	// PTY specific (if used for backend)
-	// ptyFile *os.File
-	// TtyPath string // Publicly accessible path to the TTY slave, for DOL to show user
+	// Registers
+	ierReg uint8  // Interrupt Enable Register (offset 1)
+	iirReg uint8  // Interrupt Identification Register (offset 2) - Read
+	fcrReg uint8  // FIFO Control Register (offset 2) - Write
+	lcrReg uint8  // Line Control Register (offset 3)
+	mcrReg uint8  // Modem Control Register (offset 4)
+	lsrReg uint8  // Line Status Register (offset 5) - Read
+	msrReg uint8  // Modem Status Register (offset 6) - Read
+	scrReg uint8  // Scratch Register (offset 7)
 
-	// lock sync.Mutex // For protecting register state if accessed by multiple goroutines (e.g., I/O thread and control thread)
+	dllReg uint8 // Divisor Latch LSB (when LCR.DLAB=1, accessed at offset 0)
+	dlmReg uint8 // Divisor Latch MSB (when LCR.DLAB=1, accessed at offset 1)
+
+	mutex sync.Mutex // To protect register access and rxBuffer
+
+	rxBuffer []byte     // Buffer for data received from host (e.g., PTY), to be read by guest
+	rxHead   int
+	rxTail   int
+	TtyPathPlaceholder string // Placeholder for actual TTY path if PTY is used
 }
 
 // NewSerialPortDevice creates a new emulated serial port.
-// ioBase is the starting I/O port address for this serial device.
-// outputToStdOut determines if output is immediately printed to host stdout or if a PTY should be set up.
-func NewSerialPortDevice(id string, ioBase uint16, outputToStdOut bool /*, config pb.SerialPortConfig */) (*SerialPortDevice, error) {
-	fmt.Printf("Conceptual Serial: NewSerialPortDevice %s at I/O Base 0x%X. OutputToStdout: %t\n", id, ioBase, outputToStdOut)
+func NewSerialPortDevice(id string, config *pb.SerialPortConfig, ioBase uint16, irqNum uint32) (*SerialPortDevice, error) {
+	fmt.Printf("Conceptual Serial: NewSerialPortDevice '%s' at I/O Base 0x%X, IRQ %d, Type: %s\n",
+		id, ioBase, irqNum, config.GetType())
 
 	dev := &SerialPortDevice{
-		id:         id,
-		ioBaseAddr: ioBase,
-		// Initial state of LSR: Transmitter is empty and idle. No data ready.
-		lsr: UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE,
-		iir: 0x01, // Bit 0 set to 1 indicates no interrupt pending. Bits 6,7 for FIFO enabled (conceptual default).
-		// Other registers default to 0.
+		ID:              id,
+		Config:          config,
+		guestIoBaseAddr: ioBase,
+		irq:             irqNum,
+		lsrReg:          UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE,
+		iirReg:          0x01, // No interrupt pending initially
+		rxBuffer:        make([]byte, 256),
 	}
 
-	// Conceptual: Based on pb.SerialPortConfig.Type, setup backend.
-	// For this sub-issue, we focus on outputting to stdout or a conceptual PTY.
-	if outputToStdOut {
-		// dev.output = os.Stdout // In a real implementation
-		fmt.Printf("Conceptual Serial: Port %s configured to output to os.Stdout.\n", id)
-	} else {
-		// Conceptual PTY setup:
-		// ptmx, tty, err := pty.Open() // From "github.com/creack/pty"
-		// if err != nil { return nil, fmt.Errorf("failed to open PTY for serial %s: %w", id, err) }
-		// dev.ptyFile = ptmx
-		// dev.output = ptmx // Write to PTY master
-		// dev.input = ptmx  // Read from PTY master (for future input)
-		// dev.TtyPath = tty.Name()
-		// fmt.Printf("Conceptual Serial: Port %s connected to PTY: %s (master fd: %d).\n", id, dev.TtyPath, ptmx.Fd())
-		// The DOL would need dev.TtyPath to inform the user or connect a terminal emulator.
-		dev.TtyPath_placeholder := fmt.Sprintf("/dev/pts/VARCH_%s", id) // Placeholder for TTY path
-		fmt.Printf("Conceptual Serial: Port %s would be connected to a PTY (e.g., %s).\n", id, dev.TtyPath_placeholder)
+	switch config.GetType() {
+	case pb.SerialPortConfig_STDIO:
+		dev.HostBackend = os.Stdout
+		fmt.Printf("Conceptual Serial: Port '%s' configured to output to VMM os.Stdout.\n", id)
+	case pb.SerialPortConfig_FILE:
+		fmt.Printf("Conceptual Serial: Port '%s' configured to output to file '%s'. (File opening not implemented)\n", id, config.GetPathOrAddress())
+		// file, err := os.OpenFile(config.GetPathOrAddress(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// if err != nil { return nil, fmt.Errorf("failed to open file %s for serial port %s: %w", config.GetPathOrAddress(), id, err) }
+		// dev.HostBackend = file
+	case pb.SerialPortConfig_LOG_ONLY:
+		fmt.Printf("Conceptual Serial: Port '%s' configured for LOG_ONLY.\n", id)
+	case pb.SerialPortConfig_PTY:
+		dev.TtyPathPlaceholder = fmt.Sprintf("/dev/pts/VARCH_%s_conceptual", id)
+		fmt.Printf("Conceptual Serial: Port '%s' PTY backend conceptually at %s.\n", id, dev.TtyPathPlaceholder)
+	default:
+		fmt.Printf("Warning: Serial port '%s' configured with unsupported/unspecified backend type: %s. Defaulting to LOG_ONLY.\n", id, config.GetType())
+		// Ensure config type reflects this default if it was unspecified
+		if dev.Config.Type == pb.SerialPortConfig_SERIAL_TYPE_UNSPECIFIED {
+			dev.Config.Type = pb.SerialPortConfig_LOG_ONLY
+		}
 	}
 	return dev, nil
 }
 
-var TtyPath_placeholder string // Exported for conceptual access by other parts if needed
-
 // HandlePIORead handles a Port I/O read from the guest for this serial device.
-// `port` is the absolute I/O port address.
-// `size` is the access size in bytes (1, 2, or 4 typically for PIO).
-// Returns the value read as uint64 and an error.
-func (s *SerialPortDevice) HandlePIORead(port uint16, size int) (uint64, error) {
-	// s.lock.Lock()
-	// defer s.lock.Unlock()
-
-	offset := port - s.ioBaseAddr // Calculate offset from the base I/O address
-	var val byte = 0
-
-	// fmt.Printf("Conceptual Serial %s: PIO Read from port 0x%X (offset %d), size %d\n", s.id, port, offset, size)
+func (s *SerialPortDevice) HandlePIORead(offset uint16, size int) (uint8, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	if size != 1 {
-		// Most UART registers are 1 byte. Reads of other sizes might be undefined or return part of data.
-		// For simplicity, we'll only handle 1-byte reads correctly.
-		fmt.Printf("Warning Serial %s: Read from port 0x%X with unsupported size %d, returning 0.\n", s.id, port, size)
-		return 0, nil // Or return an error
+		return 0, fmt.Errorf("serial port %s: read with size %d not supported at offset 0x%X", s.ID, size, offset)
 	}
 
+	var val uint8
+	isDLABSet := (s.lcrReg & 0x80) != 0
+
 	switch offset {
-	case UART_RX: // Read RBR (Receive Buffer Register)
-		// For now, as input is not implemented, reading RBR always returns 0 (or last char if input buffer existed).
-		// If input were implemented and data was available:
-		//   val = s.inputBuffer.ReadByte()
-		//   s.lsr &= ^UART_LSR_DATA_READY // Clear "Data Ready" bit in LSR
-		//   // If IER enables "Received Data Available Interrupt", trigger IRQ.
-		val = 0 // No input implemented yet
-		s.lsr &= ^UART_LSR_DATA_READY
-		fmt.Printf("Conceptual Serial %s: Read RBR -> 0x%02X (No input implemented)\n", s.id, val)
+	case UART_RX:
+		if isDLABSet {
+			val = s.dllReg
+			fmt.Printf("Conceptual Serial %s: Read DLL (DLAB=1) -> 0x%02X\n", s.ID, val)
+		} else {
+			if s.rxHead != s.rxTail {
+				val = s.rxBuffer[s.rxHead]
+				s.rxHead = (s.rxHead + 1) % len(s.rxBuffer)
+				if s.rxHead == s.rxTail {
+					s.lsrReg &= ^UART_LSR_DATA_READY
+				}
+				fmt.Printf("Conceptual Serial %s: Read RBR <- 0x%02X from rxBuffer\n", s.ID, val)
+			} else {
+				val = 0
+				s.lsrReg &= ^UART_LSR_DATA_READY
+				fmt.Printf("Conceptual Serial %s: Read RBR -> 0x00 (rxBuffer empty)\n", s.ID)
+			}
+		}
 	case UART_IER:
-		val = s.ier
-		fmt.Printf("Conceptual Serial %s: Read IER -> 0x%02X\n", s.id, val)
-	case UART_IIR: // Read IIR (Interrupt Identification Register)
-		// This typically shows current interrupt status.
-		// 0x01: No interrupt pending.
-		// Other values for specific interrupts if IER enables them.
-		// Bits 6,7 (0xC0) often indicate FIFO enabled.
-		val = s.iir // Return current IIR state (e.g. no interrupt pending)
-		fmt.Printf("Conceptual Serial %s: Read IIR -> 0x%02X\n", s.id, val)
-		// Reading IIR can clear some interrupt conditions in real hardware.
+		if isDLABSet {
+			val = s.dlmReg
+			fmt.Printf("Conceptual Serial %s: Read DLM (DLAB=1) -> 0x%02X\n", s.ID, val)
+		} else {
+			val = s.ierReg
+			fmt.Printf("Conceptual Serial %s: Read IER -> 0x%02X\n", s.ID, val)
+		}
+	case UART_IIR:
+		val = s.iirReg
+		// Reading IIR can clear THRE interrupt if it was the highest priority pending
+		if (s.iirReg & 0x0F) == 0x02 { // THRE interrupt was pending
+			// s.iirReg = (s.iirReg & 0xF0) | 0x01 // Set to "no interrupt pending"
+		}
+		fmt.Printf("Conceptual Serial %s: Read IIR -> 0x%02X\n", s.ID, val)
 	case UART_LCR:
-		val = s.lcr
-		fmt.Printf("Conceptual Serial %s: Read LCR -> 0x%02X\n", s.id, val)
+		val = s.lcrReg
+		fmt.Printf("Conceptual Serial %s: Read LCR -> 0x%02X\n", s.ID, val)
 	case UART_MCR:
-		val = s.mcr
-		fmt.Printf("Conceptual Serial %s: Read MCR -> 0x%02X\n", s.id, val)
-	case UART_LSR: // Read LSR (Line Status Register)
-		val = s.lsr
-		// Reading LSR often clears some error bits in real hardware, but not DATA_READY or TX_EMPTY.
-		// For conceptual: After guest reads LSR, assume it might send data, so TX is ready.
-		// This is a simplification; real TX readiness depends on actual transmission completion.
-		s.lsr |= (UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE)
-		fmt.Printf("Conceptual Serial %s: Read LSR -> 0x%02X (TX status reset to empty/idle after read)\n", s.id, val)
+		val = s.mcrReg
+		fmt.Printf("Conceptual Serial %s: Read MCR -> 0x%02X\n", s.ID, val)
+	case UART_LSR:
+		s.mutex.Lock() // Lock for rxBuffer check
+		if s.rxHead != s.rxTail {
+			s.lsrReg |= UART_LSR_DATA_READY
+		} else {
+			s.lsrReg &= ^UART_LSR_DATA_READY
+		}
+		s.mutex.Unlock() // Unlock after rxBuffer check
+		val = s.lsrReg
+		fmt.Printf("Conceptual Serial %s: Read LSR -> 0x%02X\n", s.ID, val)
 	case UART_MSR:
-		val = s.msr
-		fmt.Printf("Conceptual Serial %s: Read MSR -> 0x%02X\n", s.id, val)
+		val = s.msrReg | 0xB0 // Conceptual: DCD|DSR|CTS set, RI off
+		s.msrReg &= 0xF0    // Clear delta bits (0-3) after read
+		fmt.Printf("Conceptual Serial %s: Read MSR -> 0x%02X\n", s.ID, val)
 	case UART_SCR:
-		val = s.scr
-		fmt.Printf("Conceptual Serial %s: Read SCR -> 0x%02X\n", s.id, val)
+		val = s.scrReg
+		fmt.Printf("Conceptual Serial %s: Read SCR -> 0x%02X\n", s.ID, val)
 	default:
-		fmt.Printf("Warning Serial %s: Read from unhandled/unknown port offset %d (0x%X)\n", s.id, offset, port)
-		// Some OSes probe by reading from base+8, base+9 etc.
-		// It's often safe to return 0xFF or 0x00 for unassigned/unknown registers.
-		return 0xFF, nil // Or return an error: fmt.Errorf("serial read from unhandled port 0x%X", port)
+		return 0, fmt.Errorf("serial port %s: read from unhandled/invalid port offset 0x%X", s.ID, offset)
 	}
-	return uint64(val), nil
+	return val, nil
 }
 
 // HandlePIOWrite handles a Port I/O write from the guest for this serial device.
-// `port` is the absolute I/O port address.
-// `data` is the value being written (up to 8 bytes, but UART usually uses 1 byte).
-// `size` is the access size in bytes.
-func (s *SerialPortDevice) HandlePIOWrite(port uint16, data uint64, size int) error {
-	// s.lock.Lock()
-	// defer s.lock.Unlock()
-
-	offset := port - s.ioBaseAddr
-	val := byte(data) // Assuming 1-byte writes for UART registers for simplicity
-
-	// fmt.Printf("Conceptual Serial %s: PIO Write to port 0x%X (offset %d), data 0x%X, size %d\n", s.id, port, offset, data, size)
+func (s *SerialPortDevice) HandlePIOWrite(offset uint16, data uint8, size int) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	if size != 1 {
-		fmt.Printf("Warning Serial %s: Write to port 0x%X with unsupported size %d (data 0x%X), ignoring.\n", s.id, port, size, data)
-		return nil // Or return an error
+		return fmt.Errorf("serial port %s: write with size %d not supported at offset 0x%X", s.ID, size, offset)
 	}
 
+	isDLABSet := (s.lcrReg & 0x80) != 0
+
 	switch offset {
-	case UART_RX: // Write THR (Transmit Holding Register)
-		// if s.output != nil {
-		//    _, err := s.output.Write([]byte{val})
-		//    if err != nil { return fmt.Errorf("serial port %s failed to write byte: %w", s.id, err) }
-		// } else {
-		//    // Fallback if no output writer is configured (should not happen with proper setup)
-		//    fmt.Printf("[Serial %s Output (no writer)]: %c (0x%X)\n", s.id, val, val)
-		// }
-		// For this conceptual implementation, directly print to V-Architect's stdout.
-		// A real implementation would write to the configured backend (PTY, file, socket).
-		fmt.Printf("[VM Serial - %s]: %c\n", s.id, val) // Character output
-
-		// After writing to THR, it's momentarily not empty.
-		// s.lsr &= ^(UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE)
-		// Then, simulate it becoming empty very quickly for the next character.
-		// A real implementation would manage this based on actual backend write speed or buffering.
-		s.lsr |= (UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE)
-		// If IER enables "Transmitter Holding Register Empty Interrupt", trigger IRQ.
-
-	case UART_IER:
-		s.ier = val
-		fmt.Printf("Conceptual Serial %s: Write IER <- 0x%02X\n", s.id, val)
-	case UART_IIR: // Write FCR (FIFO Control Register)
-		s.fcr = val
-		// Handle FIFO control bits if emulating 16550 features (e.g., enable FIFO, reset FIFOs, set trigger levels).
-		// For now, just acknowledge.
-		fmt.Printf("Conceptual Serial %s: Write FCR <- 0x%02X (FIFO controls conceptually set)\n", s.id, val)
-		if (val & 0x01) != 0 { // FIFO Enable bit
-			s.iir |= 0xC0 // Indicate FIFO enabled in IIR reads
+	case UART_RX: // Write THR (Transmit Holding Register) or DLL (if DLAB set)
+		if isDLABSet {
+			s.dllReg = data
+			fmt.Printf("Conceptual Serial %s: Write DLL (DLAB=1) <- 0x%02X\n", s.ID, data)
 		} else {
-			s.iir &= ^uint8(0xC0)
+			s.lsrReg &= ^(UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE)
+
+			switch s.Config.GetType() {
+			case pb.SerialPortConfig_STDIO:
+				if writer, ok := s.HostBackend.(*os.File); ok { // Check if it's *os.File
+					_, _ = writer.Write([]byte{data}) // Error handling omitted for conceptual
+				} else { // Fallback if not os.File, e.g. if it's just os.Stdout directly
+					fmt.Printf("[VM Serial Out - %s - STDOUT]: %c\n", s.ID, data)
+				}
+			case pb.SerialPortConfig_FILE:
+				// if writer, ok := s.HostBackend.(io.Writer); ok { writer.Write([]byte{data}) } // More generic
+				fmt.Printf("[VM Serial Out - %s - FILE %s]: %c\n", s.ID, s.Config.GetPathOrAddress(), data)
+			case pb.SerialPortConfig_PTY:
+				// if writer, ok := s.HostBackend.(io.Writer); ok { writer.Write([]byte{data}) }
+				fmt.Printf("[VM Serial Out - %s - PTY %s]: %c\n", s.ID, s.TtyPathPlaceholder, data)
+			case pb.SerialPortConfig_LOG_ONLY, pb.SerialPortConfig_SERIAL_TYPE_UNSPECIFIED, pb.SerialPortConfig_NONE:
+				fallthrough
+			default:
+				fmt.Printf("[VM Serial Out - %s - LOG_ONLY]: Char='%c' (0x%02X)\n", s.ID, data, data)
+			}
+			s.lsrReg |= (UART_LSR_TX_EMPTY | UART_LSR_TX_IDLE)
+			// Conceptual: if IER enables THRE interrupt, trigger IRQ here.
 		}
+	case UART_IER:
+		if isDLABSet {
+			s.dlmReg = data
+			fmt.Printf("Conceptual Serial %s: Write DLM (DLAB=1) <- 0x%02X\n", s.ID, data)
+		} else {
+			s.ierReg = data & 0x0F
+			fmt.Printf("Conceptual Serial %s: Write IER <- 0x%02X (masked to 0x%02X)\n", s.ID, data, s.ierReg)
+		}
+	case UART_IIR: // Write FCR (FIFO Control Register)
+		s.fcrReg = data
+		fmt.Printf("Conceptual Serial %s: Write FCR <- 0x%02X\n", s.ID, data)
+		if (data & 0x01) != 0 {
+			s.iirReg = (s.iirReg & 0x3F) | 0xC0 // Set FIFO enabled bits (6,7) in IIR
+		} else {
+			s.iirReg &= ^uint8(0xC0)
+		}
+		if (data & 0x02) != 0 { /* s.rxBuffer clear */ s.rxHead = 0; s.rxTail = 0; s.lsrReg &= ^UART_LSR_DATA_READY; }
+		if (data & 0x04) != 0 { /* TX FIFO clear */ }
 	case UART_LCR:
-		s.lcr = val
-		fmt.Printf("Conceptual Serial %s: Write LCR <- 0x%02X (baud rate divisor access might change if DLAB set)\n", s.id, val)
-		// If LCR DLAB (Divisor Latch Access Bit) is set (bit 7), then port offsets 0 (RX/THR) and 1 (IER)
-		// become DLL (Divisor Latch LSB) and DLM (Divisor Latch MSB) for baud rate setting.
-		// This conceptual model doesn't implement baud rate setting yet.
+		s.lcrReg = data
+		fmt.Printf("Conceptual Serial %s: Write LCR <- 0x%02X\n", s.ID, data)
 	case UART_MCR:
-		s.mcr = val
-		fmt.Printf("Conceptual Serial %s: Write MCR <- 0x%02X (modem controls, loopback, OUT1/2)\n", s.id, val)
-		// Check MCR bit 4 for loopback mode if emulating fully.
-		// OUT1, OUT2 bits might control interrupt line.
+		s.mcrReg = data
+		fmt.Printf("Conceptual Serial %s: Write MCR <- 0x%02X\n", s.ID, data)
 	case UART_LSR:
-		// LSR is read-only for the most part; guest writes are usually ignored.
-		fmt.Printf("Conceptual Serial %s: Write LSR <- 0x%02X (ignored, LSR is read-only)\n", s.id, val)
+		fmt.Printf("Conceptual Serial %s: Write LSR <- 0x%02X (ignored)\n", s.ID, data)
 	case UART_SCR:
-		s.scr = val
-		fmt.Printf("Conceptual Serial %s: Write SCR <- 0x%02X (scratch register)\n", s.id, val)
+		s.scrReg = data
+		fmt.Printf("Conceptual Serial %s: Write SCR <- 0x%02X\n", s.ID, data)
 	default:
-		fmt.Printf("Warning Serial %s: Write to unhandled/unknown port offset %d (0x%X) with data 0x%X\n", s.id, offset, port, data)
-		return fmt.Errorf("serial write to unhandled port 0x%X", port)
+		return fmt.Errorf("serial port %s: write to unhandled/invalid port offset 0x%X with data 0x%02X", s.ID, offset, data)
 	}
 	return nil
 }
 
-// Close cleans up resources associated with the serial port device (e.g., PTY file).
+// Close cleans up resources associated with the serial port device.
 func (s *SerialPortDevice) Close() error {
-	fmt.Printf("Conceptual Serial: SerialPortDevice %s Close() called.\n", s.id)
-	// if s.ptyFile != nil {
-	//    fmt.Printf("Conceptual Serial: Closing PTY file for %s (Path: %s).\n", s.id, s.TtyPath)
-	//    err := s.ptyFile.Close()
-	//    s.ptyFile = nil
-	//    if err != nil {
-	//        return fmt.Errorf("failed to close PTY for serial %s: %w", s.id, err)
-	//    }
-	// }
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	fmt.Printf("Conceptual Serial: SerialPortDevice %s Close() called.\n", s.ID)
+	if fileBackend, ok := s.HostBackend.(*os.File); ok {
+		if fileBackend != os.Stdout && fileBackend != os.Stderr { // Don't close std streams
+			fmt.Printf("Conceptual Serial: Closing backend file for %s.\n", s.ID)
+			// return fileBackend.Close()
+		}
+	}
+	s.HostBackend = nil
 	return nil
+}
+
+// SimulateHostInput is a helper for tests or external input to feed the rxBuffer.
+func (s *SerialPortDevice) SimulateHostInput(data []byte) {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    for _, b := range data {
+        nextTail := (s.rxTail + 1) % len(s.rxBuffer)
+        if nextTail == s.rxHead { // Buffer full
+            fmt.Printf("Serial %s: RX buffer overrun during SimulateHostInput. Byte '%c' dropped.\n", s.ID, b)
+            return
+        }
+        s.rxBuffer[s.rxTail] = b
+        s.rxTail = nextTail
+    }
+    if len(data) > 0 {
+        s.lsrReg |= UART_LSR_DATA_READY
+        fmt.Printf("Serial %s: Simulated %d bytes of input. LSR_DATA_READY set. rxHead: %d, rxTail: %d\n", s.ID, len(data), s.rxHead, s.rxTail)
+        // Conceptual: if IER enables "Received Data Available", trigger IRQ here.
+    }
 }
