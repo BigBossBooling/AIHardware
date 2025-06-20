@@ -1,279 +1,254 @@
 package core_engine
 
 import (
-	// "golang.org/x/sys/unix" // For KVM ioctl constants if not defined elsewhere
-	// "unsafe" // For unsafe.Pointer with ioctls if using direct syscalls
-	"fmt" // For conceptual print statements
-	// "time" // For conceptual sleep
+	"encoding/binary" // For conceptual data packing in KVM_EXIT_IO
+	"fmt"
+	"syscall" // For EINTR, conceptually for actual ioctl
+	"time"    // For conceptual sleep in HLT
+	"unsafe"  // For accessing kvm_run fields and pointer casting
 )
 
-// KVM ioctl constants related to vCPU (conceptual, ensure these are defined or imported correctly)
-// These would align with those in hypervisor_kvm.go or a shared constants file.
+// KVM ioctl constants (from previous conceptual steps)
 const (
-	// KVM_CREATE_VCPU (already used conceptually in hypervisor_kvm.go for vmFd, this is different)
-	// Let's assume a conceptual KVM_CREATE_VCPU_IOCTL for vCPU on VM FD
-	// KVM_GET_VCPU_MMAP_SIZE_IOCTL
-	// KVM_RUN_IOCTL
-	// KVM_SET_CPUID2_IOCTL
-	// KVM_SET_MSRS_IOCTL
-	// KVM_GET_SREGS_IOCTL
-	// KVM_SET_SREGS_IOCTL
-	// KVM_SET_REGS_IOCTL
-
-	// Conceptual KVM exit reasons (subset)
-	// KVM_EXIT_IO       = 2
-	// KVM_EXIT_MMIO     = 1
-	// KVM_EXIT_HLT      = 5
-	// KVM_EXIT_SHUTDOWN = 8 // Or some other system event based value
+	KVM_SET_CPUID2_CONCEPTUAL = 0xAE90
+	KVM_SET_MSRS_CONCEPTUAL   = 0xAE89
+	KVM_GET_SREGS_CONCEPTUAL  = 0xAE83
+	KVM_SET_SREGS_CONCEPTUAL  = 0xAE84
+	KVM_SET_REGS_CONCEPTUAL   = 0xAE82
+	KVM_GET_REGS_CONCEPTUAL   = 0xAE81
+	KVM_RUN_CONCEPTUAL        = 0xAE80
 )
 
-// kvm_run structure is very complex. This is a gross simplification for conceptual use.
-// A real implementation would use Cgo to include <linux/kvm.h> or define a detailed Go struct.
-// For KVM_EXIT_IO, we'd need fields like:
-// direction, size, port, count, data_offset.
-type kvm_run_io_data struct { // Conceptual, based on actual kvm_run.io struct
-    direction uint8
-    size      uint8
-    port      uint16
-    count     uint32
-    data_offset uint64 // Offset from start of kvm_run struct to data
+// Conceptual KVM structures (from previous conceptual steps)
+type kvm_cpuid_entry2 struct {
+	Function uint32; Index uint32; Flags uint32; Eax uint32; Ebx uint32; Ecx uint32; Edx uint32;
+}
+type kvm_cpuid2_header struct { Nent, Padding uint32; }
+type kvm_msr_entry struct { Index, Reserved uint32; Data uint64; }
+type kvm_msrs_header struct { Nmsrs, Padding uint32; }
+type kvm_segment struct { Base uint64; Limit uint32; Selector uint16; Type, Present, DPL, DB, S, L, G, Unusable, Padding uint8; }
+type kvm_dtable struct { Base uint64; Limit uint16; Padding [3]uint16; }
+type kvm_sregs struct {
+	CS, DS, ES, FS, GS, SS kvm_segment; TR, LDT kvm_segment; GDT, IDT kvm_dtable;
+	CR0, CR2, CR3, CR4, CR8, EFER, ApicBase uint64;
+}
+type kvm_regs struct {
+	RAX, RBX, RCX, RDX, RSI, RDI, RSP, RBP uint64; R8, R9, R10, R11, R12, R13, R14, R15 uint64;
+	RIP, RFLAGS uint64;
 }
 
-type kvmRun struct { // Simplified for conceptual use
-	exit_reason uint32
-	// ... other common fields ...
-	io kvm_run_io_data // Nested struct for I/O exit details
-	// ... other exit specific unions/structs ...
-}
-
-
-// VCPU represents a virtual CPU.
+// VCPU struct
 type VCPU struct {
-	id           int    // vCPU ID within the VM
-	vmFd         int    // File descriptor of the parent KVM VM
-	vcpuFd       int    // File descriptor for this vCPU
-	kvmRunRawPtr *byte  // Raw pointer to the mmap'd KVM run structure
-	kvmRun       *kvmRun // Mapped KVM run structure (for easier conceptual access)
-	vm           *VirtualMachine // Reference to parent VM for accessing devices
+	id      int
+	vm      *VirtualMachine // Reference to parent VM
+	vcpuFd  int             // KVM vCPU file descriptor (conceptual)
+	kvmRun  *KvmRun         // Pointer to the mmap'd KVM run structure (from kvm_structs.go)
 }
 
-// NewVCPU creates and initializes a new vCPU for the given KVM VM.
-// vm is a pointer to the parent VirtualMachine instance.
-// id is the vCPU identifier (e.g., 0, 1, ...).
-// kvmSystemFd is the fd for /dev/kvm, needed for KVM_GET_VCPU_MMAP_SIZE.
+// NewVCPU (modified to use KvmRun from kvm_structs.go and not call setupInitialArchState)
 func NewVCPU(vm *VirtualMachine, id int, kvmSystemFd int) (*VCPU, error) {
 	fmt.Printf("Conceptual VCPU: NewVCPU called for VM ID: %s, vCPU ID: %d, KVM System FD: %d\n", vm.ID, id, kvmSystemFd)
-
-	// 1. Call KVM_CREATE_VCPU ioctl on vm.vmFd to get vcpu_fd.
-	//    vcpu_fd, err := unix.IoctlRetInt(vmFd, KVM_CREATE_VCPU_IOCTL, uintptr(id))
-	//    if err != nil { return nil, fmt.Errorf("KVM_CREATE_VCPU failed for vCPU %d: %w", id, err) }
-	vcpu_fd_placeholder := 2000 + id // Placeholder, unique per vCPU conceptually
-	// Real call: vcpu_fd, err := unix.IoctlRetInt(vm.vmFd, KVM_CREATE_VCPU_IOCTL, uintptr(id))
+	vcpu_fd_placeholder := 2000 + id
 	fmt.Printf("Conceptual VCPU: KVM_CREATE_VCPU ioctl called for VM ID %s, vCPU ID %d. Got vcpu_fd: %d (placeholder)\n", vm.ID, id, vcpu_fd_placeholder)
 
+	mmap_size := int(unsafe.Sizeof(KvmRun{})) // Use size of KvmRun from kvm_structs.go
+	fmt.Printf("Conceptual VCPU: KVM_GET_VCPU_MMAP_SIZE conceptually returned %d bytes\n", mmap_size)
 
-	// 2. Get KVM run structure size via KVM_GET_VCPU_MMAP_SIZE.
-	//    mmap_size, err := unix.IoctlRetInt(kvmSystemFd, KVM_GET_VCPU_MMAP_SIZE_IOCTL, 0)
-	//    if err != nil { return nil, fmt.Errorf("KVM_GET_VCPU_MMAP_SIZE failed: %w", err) }
-	mmap_size_placeholder := 4096 // Typical page size, actual size can be larger
-	fmt.Printf("Conceptual VCPU: KVM_GET_VCPU_MMAP_SIZE ioctl called. Got mmap_size: %d (placeholder)\n", mmap_size_placeholder)
-
-
-	// 3. Mmap the KVM run structure.
-	//    kvmRunBytes, err := unix.Mmap(vcpu_fd_placeholder, 0, mmap_size_placeholder, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
-	//    if err != nil { return nil, fmt.Errorf("mmap KVM run failed for vCPU %d: %w", id, err) }
-	//    kvmRunRawPtr := &kvmRunBytes[0]
-
-	// Using a placeholder allocation for the conceptual raw pointer
-	conceptualKvmRunSpace := make([]byte, mmap_size_placeholder)
-	kvmRunRawPtr_placeholder := &conceptualKvmRunSpace[0]
-	// In a real implementation, kvmRun would be properly cast:
-	// kvmRun_typed_ptr := (*kvmRun)(unsafe.Pointer(kvmRunRawPtr_placeholder))
-	kvmRun_typed_ptr_placeholder := &kvmRun{} // Placeholder for typed access
-
-	fmt.Printf("Conceptual VCPU: KVM run structure mmap'd for vCPU %d (placeholder address: %p)\n", id, kvmRunRawPtr_placeholder)
-
+	kvmRunStruct_placeholder := KvmRun{}
+	kvmRunPtr_placeholder := &kvmRunStruct_placeholder
+	fmt.Printf("Conceptual VCPU: Mapped KVM_RUN structure for vCPU %d (using placeholder Go struct address: %p)\n", id, kvmRunPtr_placeholder)
 
 	vcpu := &VCPU{
-		id:           id,
-		vmFd:         vm.vmFd, // Store vmFd from parent VM
-		vcpuFd:       vcpu_fd_placeholder,
-		kvmRunRawPtr: kvmRunRawPtr_placeholder,
-		kvmRun:       kvmRun_typed_ptr_placeholder, // Store the conceptually typed pointer
-		vm:           vm,                         // Store reference to parent VM
+		id:      id,
+		vm:      vm,
+		vmFd:    vm.vmFd, // From parent VM
+		vcpuFd:  vcpu_fd_placeholder,
+		kvmRun:  kvmRunPtr_placeholder,
 	}
 
-	// 4. Initial MSR and CPUID setup (delegated to arch-specific function).
-	if err := vcpu.setupInitialArchState(); err != nil {
-		// In real code: unix.Munmap(kvmRunBytes)
-		// In real code: unix.Close(vcpu_fd_placeholder)
-		return nil, fmt.Errorf("failed to setup initial arch state for vCPU %d: %w", id, err)
-	}
-
+	fmt.Printf("Conceptual VCPU: vCPU %d for VM %s created. setupInitialArchState will be called by VM's StartProcess.\n", id, vm.ID)
 	return vcpu, nil
 }
 
-// setupInitialArchState configures essential MSRs, CPUID, SREGS, and REGS for the vCPU.
-// This is highly architecture-specific (x86-64 assumed here conceptually).
-func (v *VCPU) setupInitialArchState() error {
-	fmt.Printf("Conceptual VCPU: setupInitialArchState for vCPU ID %d (vcpu_fd %d)\n", v.id, v.vcpuFd)
-
-	// A. Setup CPUID:
-	//    Conceptual: Call KVM_SET_CPUID2 ioctl with appropriate entries.
-	//    This involves creating a kvm_cpuid2 struct, populating it with entries
-	//    (e.g., vendor ID, feature flags based on host capabilities and desired guest features).
-	//    _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(v.vcpuFd), KVM_SET_CPUID2_IOCTL, uintptr(unsafe.Pointer(cpuid_data_ptr)))
-	fmt.Printf("Conceptual VCPU: KVM_SET_CPUID2 ioctl called for vCPU %d.\n", v.id)
-
-	// B. Setup MSRs (Model Specific Registers):
-	//    Conceptual: Call KVM_SET_MSRS ioctl.
-	//    Requires preparing a kvm_msrs struct with entries for MSR_EFER, MSR_STAR, etc.
-	//    _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(v.vcpuFd), KVM_SET_MSRS_IOCTL, uintptr(unsafe.Pointer(msrs_data_ptr)))
-	fmt.Printf("Conceptual VCPU: KVM_SET_MSRS ioctl called for vCPU %d (EFER, STAR, etc.).\n", v.id)
-
-	// C. Setup Special Registers (SREGS - segment, control, debug, etc.):
-	//    Conceptual: Call KVM_GET_SREGS, modify, then KVM_SET_SREGS.
-	//    Set CR0 (paging, protected mode), CR3 (page table base), CR4 (PAE).
-	//    Setup GDT, IDT, CS, DS, ES, SS, FS, GS selectors.
-	//    For 64-bit mode: CS.L=1, CS.D=0. EFER.LME=1, CR0.PG=1.
-	//    ioctl(v.vcpuFd, KVM_GET_SREGS_IOCTL, &sregs_struct)
-	//    ... modify sregs_struct ...
-	//    ioctl(v.vcpuFd, KVM_SET_SREGS_IOCTL, &sregs_struct)
-	fmt.Printf("Conceptual VCPU: KVM_GET_SREGS/KVM_SET_SREGS ioctls called for vCPU %d (CR0, CR3, CR4, GDT, IDT, segments).\n", v.id)
-
-	// D. Setup General Purpose Registers (REGS):
-	//    Conceptual: Call KVM_SET_REGS.
-	//    Set RIP (initial instruction pointer), RSP (stack pointer), RFLAGS.
-	//    For Linux boot, RSI might point to boot_params.
-	//    ioctl(v.vcpuFd, KVM_SET_REGS_IOCTL, &regs_struct)
-	fmt.Printf("Conceptual VCPU: KVM_SET_REGS ioctl called for vCPU %d (RIP, RSP, RFLAGS).\n", v.id)
-
+// setupInitialArchState (as defined in previous subtask - Task 1 of SUB_PLAN_VCPU_BOOT.md)
+func (v *VCPU) setupInitialArchState(kernelLoadAddressGPA uint64, bootParamsAddressGPA uint64, pml4AddressGPA uint64) error {
+	fmt.Printf("Conceptual VCPU: setupInitialArchState for vCPU ID %d (vcpu_fd %d) of VM %s\n", v.id, v.vcpuFd, v.vm.ID)
+	fmt.Printf("Conceptual VCPU: Using KernelEntryGPA=0x%X, BootParamsGPA=0x%X, PML4_GPA=0x%X\n",
+		kernelLoadAddressGPA, bootParamsAddressGPA, pml4AddressGPA)
+	fmt.Println("Conceptual VCPU: Setting up CPUID...")
+	fmt.Println("Conceptual VCPU: KVM_SET_CPUID2 ioctl called with populated CPUID entries.")
+	fmt.Println("Conceptual VCPU: Setting up MSRs...")
+	fmt.Println("Conceptual VCPU: KVM_SET_MSRS ioctl called with critical MSRs (EFER, STAR, LSTAR, etc.).")
+	fmt.Println("Conceptual VCPU: Setting up SREGS (Segments, CR0, CR3, CR4, EFER)...")
+	var sregs kvm_sregs
+	sregs.CR0 = 0x80050031
+	sregs.CR3 = pml4AddressGPA
+	sregs.CR4 = 0x000006A0
+	sregs.EFER = 0x00000D01
+	fmt.Printf("Conceptual VCPU: KVM_SET_SREGS ioctl called. CR0=0x%X, CR3=0x%X, CR4=0x%X, EFER=0x%X\n", sregs.CR0, sregs.CR3, sregs.CR4, sregs.EFER)
+	fmt.Println("Conceptual VCPU: Setting up REGS (RIP, RSP, RFLAGS, RSI)...")
+	var regs kvm_regs
+	regs.RIP = kernelLoadAddressGPA
+	regs.RSP = bootParamsAddressGPA - 16
+	regs.RFLAGS = 0x2
+	regs.RSI = bootParamsAddressGPA
+	fmt.Printf("Conceptual VCPU: KVM_SET_REGS ioctl called. RIP=0x%X, RSP=0x%X, RFLAGS=0x%X, RSI=0x%X\n", regs.RIP, regs.RSP, regs.RFLAGS, regs.RSI)
 	fmt.Printf("Conceptual VCPU: Initial MSR/CPUID/SREGS/REGS setup complete for vCPU %d.\n", v.id)
-	return nil // Placeholder
+	return nil
 }
 
-// Run starts the vCPU execution loop. This function will block.
-// Each vCPU should run in its own goroutine.
+// Run starts the vCPU execution loop. (Enhanced as per current subtask description)
 func (v *VCPU) Run() error {
-	fmt.Printf("Conceptual VCPU: vCPU.Run() called for vCPU ID %d (vcpu_fd %d). Entering KVM_RUN loop.\n", v.id, v.vcpuFd)
+	fmt.Printf("Conceptual VCPU.Run: vCPU %d (FD conceptual: %d) of VM %s starting KVM_RUN loop.\n", v.id, v.vcpuFd, v.vm.ID)
 
-	// Main KVM run loop
-	for {
-		// Conceptual: Call KVM_RUN ioctl on v.vcpuFd.
-		// This transfers control to the guest code and blocks until a VM-exit.
-		// _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(v.vcpuFd), KVM_RUN_IOCTL, 0)
-		// if errno != 0 && errno != unix.EINTR { // EINTR might happen, should retry
-		//  return fmt.Errorf("KVM_RUN failed for vCPU %d: %w", v.id, errno)
+	if v.kvmRun == nil {
+		err := fmt.Errorf("kvmRun structure not initialized for vCPU %d", v.id)
+		if v.vm != nil { v.vm.SetError(err); v.vm.SetStatus(FAILED) }
+		return err
+	}
+	if v.vm == nil {
+		 return fmt.Errorf("vCPU %d has no parent VM assigned", v.id)
+	}
+
+	// Conceptual loop for KVM_RUN, limited iterations for this conceptual implementation
+	for iter := 0; iter < 10; iter++ {
+		fmt.Printf("Conceptual VCPU.Run: vCPU %d KVM_RUN iteration %d...\n", v.id, iter+1)
+		// Actual KVM_RUN call:
+		// _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(v.vcpuFd), KVM_RUN_CONCEPTUAL, 0)
+		// if errno != 0 && errno != syscall.EINTR {
+		//     runErr := fmt.Errorf("KVM_RUN failed for vCPU %d: %w", v.id, errno)
+		//     if v.vm != nil { v.vm.SetError(runErr); v.vm.SetStatus(FAILED) }
+		//     return runErr
 		// }
-		fmt.Printf("Conceptual VCPU %d: KVM_RUN ioctl executed.\n", v.id)
+		// if errno == syscall.EINTR {
+		//     fmt.Printf("Conceptual VCPU.Run: KVM_RUN for vCPU %d interrupted, retrying.\n", v.id)
+		//     continue
+		// }
+		// KVM updates v.kvmRun upon exit.
 
-		// Access exit reason from the mmap'd region (v.kvmRunRawPtr)
-		// Access exit reason from the mmap'd region (v.kvmRun)
-		// currentExitReason := v.kvmRun.exit_reason // Access through the typed conceptual pointer
-
-		// Simulate different exit reasons for conceptual flow.
-		// In reality, this value comes from KVM after KVM_RUN.
-		var currentExitReason uint32
-		if v.id == 0 && v.vm.Config.SerialPorts != nil && len(v.vm.Config.SerialPorts) > 0 { // Simulate COM1 output from vCPU0
-			currentExitReason = 2 // KVM_EXIT_IO placeholder
-			// Simulate I/O write data for COM1
-			v.kvmRun.io.direction = 0 // KVM_EXIT_IO_OUT placeholder
-			v.kvmRun.io.port = DEFAULT_SERIAL_IO_BASE_COM1
-			v.kvmRun.io.size = 1
-			v.kvmRun.io.count = 1
-			// Conceptually, guest data would be at v.kvmRunRawPtr + v.kvmRun.io.data_offset
-			// For this test, we don't need to fill data, just simulate the exit.
-			// Let's assume a character 'A' is being written.
-			// (*( (*byte)(unsafe.Pointer(v.kvmRunRawPtr + v.kvmRun.io.data_offset)) )) = 'A'
+		// Simulate KVM setting exit reason and data for conceptual flow:
+		if iter == 0 && v.id == 0 && v.vm.serialPorts != nil && len(v.vm.serialPorts) > 0 {
+			v.kvmRun.ExitReason = KVM_EXIT_IO
+			v.kvmRun.Io.Direction = KVM_EXIT_IO_OUT
+			v.kvmRun.Io.Port = DEFAULT_SERIAL_IO_BASE_COM1
+			v.kvmRun.Io.Size = 1
+			v.kvmRun.Io.Count = 1
+			v.kvmRun.Io.DataOffset = uint64(unsafe.Offsetof(v.kvmRun.RawDataPayload))
+			v.kvmRun.RawDataPayload[0] = 'V'
+		} else if iter == 1 && v.id == 0 && v.vm.serialPorts != nil && len(v.vm.serialPorts) > 0 {
+			v.kvmRun.ExitReason = KVM_EXIT_IO
+			v.kvmRun.Io.Direction = KVM_EXIT_IO_OUT
+			v.kvmRun.Io.Port = DEFAULT_SERIAL_IO_BASE_COM1
+			v.kvmRun.Io.Size = 1
+			v.kvmRun.Io.Count = 1
+			v.kvmRun.Io.DataOffset = uint64(unsafe.Offsetof(v.kvmRun.RawDataPayload))
+			v.kvmRun.RawDataPayload[0] = 'M'
+		} else if iter == 2 {
+			v.kvmRun.ExitReason = KVM_EXIT_HLT
 		} else {
-			currentExitReason = 5 // KVM_EXIT_HLT placeholder
+			v.kvmRun.ExitReason = KVM_EXIT_SHUTDOWN
 		}
+		// End simulation block
 
-		fmt.Printf("Conceptual VCPU %d (VM %s): VM-exit. Reason: %d.\n", v.id, v.vm.ID, currentExitReason)
+		fmt.Printf("Conceptual VCPU.Run: vCPU %d KVM_RUN exited with reason: %d\n", v.id, v.kvmRun.ExitReason)
 
-		switch currentExitReason {
-		case 2: // KVM_EXIT_IO placeholder
-			port := v.kvmRun.io.port
-			dataOffsetBytes := v.kvmRun.io.data_offset
-			size := v.kvmRun.io.size
-			direction := v.kvmRun.io.direction // 0 for OUT, 1 for IN
+		switch v.kvmRun.ExitReason {
+		case KVM_EXIT_IO:
+			ioPort := v.kvmRun.Io.Port
+			ioSize := int(v.kvmRun.Io.Size)
+			ioDirection := v.kvmRun.Io.Direction
+			dataPayloadPtr := unsafe.Pointer(&v.kvmRun.RawDataPayload[0])
 
-			// Conceptual: dataPtr := unsafe.Pointer(v.kvmRunRawPtr + dataOffsetBytes)
-			// In a real scenario, data needs to be read from/written to this dataPtr based on direction and size.
+			fmt.Printf("Conceptual VCPU.Run: vCPU %d KVM_EXIT_IO: Port=0x%X, Size=%d, Dir=%d\n",
+				v.id, ioPort, ioSize, ioDirection)
 
 			handled := false
-			// Dispatch to serial ports if port matches
-			// Lock the VM's resourceLock if accessing shared device list, or ensure serialPorts is immutable post-init.
-			// Assuming serialPorts is stable after vm.initializeDevices().
-			for _, sp := range v.vm.serialPorts { // Access parent VM's serial ports
-				if port >= sp.ioBaseAddr && port < (sp.ioBaseAddr+8) { // 8 standard UART registers
-					if direction == 0 { // KVM_EXIT_IO_OUT
-						// Conceptual: read data from guest memory via dataPtr.
-						// For simplicity, assume 1 byte write and data is already in a conceptual var.
-						var writeData uint64 = 'A' // Example data
-						if port == sp.ioBaseAddr { // THR write
-							fmt.Printf("Conceptual VCPU %d (VM %s): KVM_EXIT_IO_OUT to Serial %s (Port 0x%X, Data 0x%X)\n", v.id, v.vm.ID, sp.id, port, writeData)
-							err := sp.HandlePIOWrite(port, writeData, int(size))
-							if err != nil { fmt.Printf("Error writing to serial port %s: %v\n", sp.id, err) }
-						} else {
-							// Handle writes to other serial registers (IER, LCR, etc.)
-							err := sp.HandlePIOWrite(port, writeData, int(size)) // Pass 0 for non-data regs for now
-							if err != nil { fmt.Printf("Error writing to serial port %s register 0x%X: %v\n", sp.id, port, err) }
+			if v.vm != nil && v.vm.serialPorts != nil {
+				for _, sp := range v.vm.serialPorts {
+					if sp != nil && ioPort >= sp.ioBaseAddr && ioPort < (sp.ioBaseAddr+8) {
+						if ioDirection == KVM_EXIT_IO_OUT {
+							var writeData uint64
+							switch ioSize {
+							case 1: writeData = uint64(*(*uint8)(dataPayloadPtr))
+							case 2: writeData = uint64(binary.LittleEndian.Uint16((*[2]byte)(dataPayloadPtr)[:]))
+							case 4: writeData = uint64(binary.LittleEndian.Uint32((*[4]byte)(dataPayloadPtr)[:]))
+							default:
+								fmt.Printf("Warning: vCPU %d KVM_EXIT_IO_OUT unhandled size %d for port 0x%X\n", v.id, ioSize, ioPort)
+								continue
+							}
+							if err := sp.HandlePIOWrite(ioPort, writeData, ioSize); err != nil {
+								fmt.Printf("Error handling PIO write for vCPU %d on port 0x%X: %v\n", v.id, ioPort, err)
+							}
+						} else { // KVM_EXIT_IO_IN
+							readData, err := sp.HandlePIORead(ioPort, ioSize)
+							if err != nil {
+								fmt.Printf("Error handling PIO read for vCPU %d on port 0x%X: %v\n", v.id, ioPort, err)
+							} else {
+								switch ioSize {
+								case 1: *(*uint8)(dataPayloadPtr) = uint8(readData)
+								case 2: binary.LittleEndian.PutUint16((*[2]byte)(dataPayloadPtr)[:], uint16(readData))
+								case 4: binary.LittleEndian.PutUint32((*[4]byte)(dataPayloadPtr)[:], uint32(readData))
+								default:
+									fmt.Printf("Warning: vCPU %d KVM_EXIT_IO_IN unhandled size %d for port 0x%X\n", v.id, ioSize, ioPort)
+								}
+							}
 						}
-					} else { // KVM_EXIT_IO_IN
-						readData, err := sp.HandlePIORead(port, int(size))
-						if err != nil {
-							fmt.Printf("Error reading from serial port %s register 0x%X: %v\n", sp.id, port, err)
-						} else {
-							// Conceptual: write readData back to guest memory via dataPtr
-							// For a byte read: *(*byte)(dataPtr) = byte(readData)
-							fmt.Printf("Conceptual VCPU %d (VM %s): KVM_EXIT_IO_IN from Serial %s (Port 0x%X) -> Data 0x%X\n", v.id, v.vm.ID, sp.id, port, readData)
-						}
+						handled = true
+						break
 					}
-					handled = true
-					break
 				}
 			}
 			if !handled {
-				fmt.Printf("Conceptual VCPU %d (VM %s): Unhandled KVM_EXIT_IO at port 0x%X\n", v.id, v.vm.ID, port)
-			}
-			// Simulate HLT after I/O to stop for this conceptual example
-			if v.id == 0 && port == DEFAULT_SERIAL_IO_BASE_COM1 {
-				fmt.Printf("Conceptual VCPU %d (VM %s): Simulating HLT after serial output to stop test.\n", v.id, v.vm.ID)
-				return nil // Exit run loop
+				fmt.Printf("Warning: vCPU %d Unhandled KVM_EXIT_IO: Port=0x%X, Size=%d, Dir=%d\n", v.id, ioPort, ioSize, ioDirection)
+				if ioDirection == KVM_EXIT_IO_IN {
+					 dataWritePtr := unsafe.Pointer(&v.kvmRun.RawDataPayload[0])
+					 switch ioSize {
+						case 1: *(*uint8)(dataWritePtr) = 0xFF
+						case 2: binary.LittleEndian.PutUint16((*[2]byte)(dataWritePtr)[:], 0xFFFF)
+						case 4: binary.LittleEndian.PutUint32((*[4]byte)(dataWritePtr)[:], 0xFFFFFFFF)
+					 }
+				}
 			}
 
-		// case KVM_EXIT_MMIO:
-		//    fmt.Printf("Conceptual VCPU %d: Handling KVM_EXIT_MMIO (not implemented).\n", v.id)
-		case 5: // KVM_EXIT_HLT placeholder
-			fmt.Printf("Conceptual VCPU %d (VM %s): Guest HLT instruction. Pausing/yielding conceptually.\n", v.id, v.vm.ID)
-			// For this conceptual loop, exit after HLT.
-			fmt.Printf("Conceptual VCPU %d (VM %s): Exiting Run() loop due to HLT.\n", v.id, v.vm.ID)
+		case KVM_EXIT_HLT:
+			fmt.Printf("Conceptual VCPU.Run: vCPU %d received KVM_EXIT_HLT. Guest is idle. Pausing for 10ms.\n", v.id)
+			time.Sleep(10 * time.Millisecond)
+
+		case KVM_EXIT_SHUTDOWN:
+			fmt.Printf("Info: vCPU %d received KVM_EXIT_SHUTDOWN. Exiting run loop.\n", v.id)
+			if v.vm != nil { v.vm.SetStatus(STOPPING) }
 			return nil
-		// case KVM_EXIT_SHUTDOWN:
-		//    fmt.Printf("Conceptual VCPU %d (VM %s): Shutdown requested by guest. Exiting Run() loop.\n", v.id, v.vm.ID)
-		//    return nil
+
+		case KVM_EXIT_INTERNAL_ERROR:
+			suberror := uint32(0) // Conceptual: v.kvmRun.InternalError.Suberror
+			errMsg := fmt.Sprintf("vCPU %d KVM_EXIT_INTERNAL_ERROR. Suberror: 0x%X. VM will be terminated.", v.id, suberror)
+			fmt.Println(errMsg)
+			if v.vm != nil {
+				v.vm.SetError(fmt.Errorf(errMsg))
+				v.vm.SetStatus(FAILED)
+			}
+			return fmt.Errorf(errMsg)
+
 		default:
-			return fmt.Errorf("unhandled KVM exit reason: %d for vCPU %d in VM %s", currentExitReason, v.id, v.vm.ID)
+			errMsg := fmt.Sprintf("vCPU %d unhandled KVM exit reason: %d. Terminating.", v.id, v.kvmRun.ExitReason)
+			fmt.Println(errMsg)
+			if v.vm != nil {
+				v.vm.SetError(fmt.Errorf(errMsg))
+				v.vm.SetStatus(FAILED)
+			}
+			return fmt.Errorf(errMsg)
 		}
-		// time.Sleep(50 * time.Millisecond) // Conceptual delay if not HLT/SHUTDOWN
 	}
-	// return nil // Should be unreachable if loop handles exits properly
+
+	fmt.Printf("Conceptual VCPU.Run: vCPU %d run loop finished conceptual iterations (should have exited via SHUTDOWN, HLT->SHUTDOWN, or ERROR).\n", v.id)
+	if v.vm != nil { v.vm.SetStatus(STOPPING) }
+	return nil
 }
 
 // Close cleans up resources associated with the vCPU.
 func (v *VCPU) Close() error {
 	fmt.Printf("Conceptual VCPU: vCPU.Close() called for vCPU ID %d (vcpu_fd %d).\n", v.id, v.vcpuFd)
-
-	// 1. Unmap KVM run structure.
-	//    err := unix.Munmap( (*[1 << 30]byte)(unsafe.Pointer(v.kvmRunRawPtr))[:mmap_size_placeholder_from_NewVCPU] )
-	//    if err != nil { fmt.Printf("Error unmapping KVM run for vCPU %d: %v\n", v.id, err) }
 	fmt.Printf("Conceptual VCPU %d: KVM run structure unmapped.\n", v.id)
-
-	// 2. Close vcpu_fd.
-	//    err = unix.Close(v.vcpuFd)
-	//    if err != nil { fmt.Printf("Error closing vCPU fd %d: %v\n", v.vcpuFd, err) }
 	fmt.Printf("Conceptual VCPU %d: vCPU fd %d closed.\n", v.id, v.vcpuFd)
-
 	return nil
 }
