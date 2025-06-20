@@ -1,125 +1,120 @@
-package main
+package core_engine
 
 import (
 	"fmt"
 	"os"
-	"syscall" // For ioctl constants and calls
-	// "golang.org/x/sys/unix" // A more modern way for syscalls, but basic syscall is fine for conceptual.
+	"syscall" // For ioctl constants and calls (conceptually)
+
+	// Assuming pb types are generated and accessible via this import path
+	pb "github.com/V-Architect/v-architect-core/core_engine/pb"
+	// It's better to use the official x/sys/unix or a direct KVM header binding for constants
+	// For this conceptual step, we define a few critical ones or assume they exist.
 )
 
-// KVM ioctl constants (simplified, actual values are in kernel headers)
-// These are conceptual placeholders. A real implementation would use
-// constants from a package like golang.org/x/sys/unix or a CGo binding.
+// Placeholder KVM ioctl constants (actual values are system-dependent from <linux/kvm.h>)
 const (
-	KVM_GET_API_VERSION       = 0xAE00 // Conceptual value
-	KVM_CREATE_VM             = 0xAE01 // Conceptual value
-	KVM_CHECK_EXTENSION       = 0xAE03 // Conceptual value
-	KVM_CAP_USER_MEMORY       = 3      // Conceptual value (KVM_CAP_USER_MEMORY from linux/kvm.h)
-	KVM_CAP_IRQCHIP           = 0      // Conceptual value (KVM_CAP_IRQCHIP)
-	KVM_CAP_SET_TSS_ADDR      = 26     // Conceptual value
-	KVM_CREATE_IRQCHIP        = 0xAE60 // Conceptual value
-	KVM_CREATE_PIT2           = 0xAE77 // Conceptual value
-	KVM_SET_TSS_ADDR          = 0xAE47 // Conceptual value
+	KVM_GET_API_VERSION_CONCEPTUAL      = 0xAE00
+	KVM_CREATE_VM_CONCEPTUAL            = 0xAE01
+	KVM_CHECK_EXTENSION_CONCEPTUAL      = 0xAE03
+	KVM_SET_TSS_ADDR_CONCEPTUAL         = 0xAE47
+	KVM_CREATE_IRQCHIP_CONCEPTUAL       = 0xAE60
+	KVM_CREATE_PIT2_CONCEPTUAL          = 0xAE77
+
+	// Actual KVM_CAP_* constants (values are examples, real ones are from kvm.h)
+	// These should ideally come from a proper KVM bindings package.
+	KVM_CAP_USER_MEMORY_ENUM      = 3    // KVM_CAP_USER_MEMORY
+	KVM_CAP_IRQCHIP_ENUM          = 0    // KVM_CAP_IRQCHIP (often 0 or a low number, check headers)
+	KVM_CAP_HLT_ENUM              = 2    // KVM_CAP_HLT
+	KVM_CAP_SET_TSS_ADDR_ENUM     = 26   // KVM_CAP_SET_TSS_ADDR
+	KVM_CAP_EXT_CPUID_ENUM        = 7    // KVM_CAP_EXT_CPUID
+	KVM_CAP_PIT2_ENUM             = 4    // KVM_CAP_PIT2 (related to KVM_CREATE_PIT2)
+	KVM_CAP_IOEVENTFD_ENUM        = 10   // KVM_CAP_IOEVENTFD
+	KVM_CAP_IRQFD_ENUM            = 11   // KVM_CAP_IRQFD
+	KVM_CAP_MP_STATE_ENUM         = 14   // KVM_CAP_MP_STATE (for KVM_GET/SET_MP_STATE)
+
+
+	KVM_API_VERSION_EXPECTED = 12 // Standard KVM API version
 )
 
-// KVMHypervisor implements the Hypervisor interface for KVM.
+
+// KVMHypervisor implements the Hypervisor interface using KVM.
 type KVMHypervisor struct {
-	kvmFile         *os.File // File descriptor for /dev/kvm as *os.File
-	kvmFd           int      // Integer file descriptor if needed for direct ioctl
+	kvmFd           int // File descriptor for /dev/kvm
 	apiVersion      int
-	capabilities    HostCapabilityInfo // Store detected general host capabilities
-	kvmCapabilities map[string]bool    // Stores specific KVM capabilities checks
+	kvmCapabilities map[string]bool // Stores checked KVM capabilities (by string name)
+	// hostCapabilities *HostCapabilityInfo // Cached host capabilities (can be populated on first GetHostCapabilities call)
 }
 
-// NewKVMHypervisor creates and initializes a KVM hypervisor instance.
+// NewKVMHypervisor creates and initializes a KVM hypervisor context.
 func NewKVMHypervisor() (*KVMHypervisor, error) {
-	fmt.Println("Conceptual KVM: NewKVMHypervisor called.")
-	file, err := os.OpenFile("/dev/kvm", os.O_RDWR|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open /dev/kvm: %w", err)
-	}
-	kvmFileDescriptor := int(file.Fd())
-
-	h := &KVMHypervisor{
-		kvmFile:         file,
-		kvmFd:           kvmFileDescriptor,
-		kvmCapabilities: make(map[string]bool),
-	}
-
-	// Check KVM API Version
-	// version_ioctl_val, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(kvmFileDescriptor), KVM_GET_API_VERSION, 0)
-	// In a real implementation, use proper ioctl call, e.g., from golang.org/x/sys/unix.IoctlRetInt
-	version_ioctl_val := 12 // Placeholder for KVM_API_VERSION which is 12
-	// errno := syscall.Errno(0) // Placeholder
-	// if errno != 0 {
-	//    file.Close()
-	//    return nil, fmt.Errorf("KVM_GET_API_VERSION ioctl failed: %w", errno)
+	fmt.Println("Conceptual KVMHypervisor: NewKVMHypervisor - Opening /dev/kvm")
+	// fdFile, err := os.OpenFile("/dev/kvm", os.O_RDWR|syscall.O_CLOEXEC, 0)
+	// if err != nil {
+	//     return nil, fmt.Errorf("failed to open /dev/kvm: %w", err)
 	// }
-	if version_ioctl_val != 12 { // KVM_API_VERSION from linux/kvm.h
-		file.Close()
-		return nil, fmt.Errorf("unsupported KVM API version: %d, expected 12", version_ioctl_val)
+	// kvmFileDescriptor := int(fdFile.Fd())
+	kvmFileDescriptor := 3 // Placeholder FD for /dev/kvm, assuming it's successfully opened.
+
+	fmt.Println("Conceptual KVMHypervisor: Getting KVM API version")
+	// apiVerResult, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFileDescriptor), KVM_GET_API_VERSION_CONCEPTUAL, 0)
+	// if errno != 0 {
+	//     syscall.Close(kvmFileDescriptor) // Close fdFile.Close() in real code
+	//     return nil, fmt.Errorf("KVM_GET_API_VERSION ioctl failed: %w", errno)
+	// }
+	// if int(apiVerResult) != KVM_API_VERSION_EXPECTED {
+	//     syscall.Close(kvmFileDescriptor)
+	//     return nil, fmt.Errorf("unsupported KVM API version: got %d, expected %d", apiVerResult, KVM_API_VERSION_EXPECTED)
+	// }
+	apiVerResult := KVM_API_VERSION_EXPECTED // Placeholder
+	fmt.Printf("Conceptual KVMHypervisor: KVM API Version: %d\n", apiVerResult)
+
+	caps := make(map[string]bool)
+	// Map user-friendly names to their KVM_CAP_* enum values
+	essentialCapsToCheck := map[string]int{
+		"USER_MEMORY":    KVM_CAP_USER_MEMORY_ENUM,
+		"IRQCHIP":        KVM_CAP_IRQCHIP_ENUM,
+		"HLT":            KVM_CAP_HLT_ENUM,
+		"SET_TSS_ADDR":   KVM_CAP_SET_TSS_ADDR_ENUM,
+		"EXT_CPUID":      KVM_CAP_EXT_CPUID_ENUM,
+		"PIT2":           KVM_CAP_PIT2_ENUM,
+		"IOEVENTFD":      KVM_CAP_IOEVENTFD_ENUM,
+		"IRQFD":          KVM_CAP_IRQFD_ENUM,
+		"MP_STATE":       KVM_CAP_MP_STATE_ENUM,
 	}
-	h.apiVersion = int(version_ioctl_val)
-	fmt.Printf("Conceptual KVM: KVM API Version: %d\n", h.apiVersion)
 
-	// Check for essential KVM capabilities related to Hardware Virtualization.
-	essentialCaps := map[string]int{ // Map name to conceptual KVM_CAP constant value
-		"KVM_CAP_USER_MEMORY":    KVM_CAP_USER_MEMORY,
-		"KVM_CAP_SET_TSS_ADDR":   KVM_CAP_SET_TSS_ADDR,
-		"KVM_CAP_EXT_CPUID":      0xAE19, // Conceptual placeholder for KVM_CAP_EXT_CPUID
-		"KVM_CAP_IRQCHIP":        KVM_CAP_IRQCHIP,
-		"KVM_CAP_HLT":            0xAE06, // Conceptual placeholder for KVM_CAP_HLT
-		"KVM_CAP_PIT2":           KVM_CAP_PIT2,
-		"KVM_CAP_IOEVENTFD":      0xAE79, // Conceptual placeholder for KVM_CAP_IOEVENTFD
-		"KVM_CAP_IRQFD":          0xAE7A, // Conceptual placeholder for KVM_CAP_IRQFD
-		"KVM_CAP_MP_STATE":       0xAE0E, // Conceptual placeholder for KVM_CAP_MP_STATE
-	}
-
-	fmt.Println("Conceptual KVM: Checking KVM Capabilities...")
-	for capName, capVal := range essentialCaps {
-		// supported, err := h.checkKvmExtension(capVal) // Internal helper to call KVM_CHECK_EXTENSION
-		// Placeholder logic:
-		supported := true
-		err = nil
-		// End placeholder logic
-
-		if err != nil {
-			fmt.Printf("Warning: KVM_CHECK_EXTENSION for %s (cap %d) encountered an error: %v\n", capName, capVal, err)
-			h.kvmCapabilities[capName] = false
-		} else if !supported {
-			fmt.Printf("Warning: KVM Capability %s (cap %d) not supported.\n", capName, capVal)
-			h.kvmCapabilities[capName] = false
-		} else {
-			fmt.Printf("Info: KVM Capability %s (cap %d) is supported.\n", capName, capVal)
-			h.kvmCapabilities[capName] = true
+	fmt.Println("Conceptual KVMHypervisor: Checking KVM extensions/capabilities")
+	for name, capEnum := range essentialCapsToCheck {
+		// ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFileDescriptor), KVM_CHECK_EXTENSION_CONCEPTUAL, uintptr(capEnum))
+		// supported := (errno == 0 && ret > 0)
+		// caps[name] = supported
+		// if !supported {
+		//     fmt.Printf("Warning: KVM Capability %s (Enum: %d) not supported (ret: %d, errno: %v)\n", name, capEnum, ret, errno)
+		//     if isCriticalKvmCapability(name) {
+		//         // In real code: fdFile.Close()
+		//         return nil, fmt.Errorf("critical KVM capability %s not supported", name)
+		//     }
+		// } else {
+		//     fmt.Printf("Info: KVM Capability %s (Enum: %d) supported.\n", name, capEnum)
+		// }
+		caps[name] = true // Placeholder: assume all listed essential capabilities are supported for conceptual progress
+		fmt.Printf("Conceptual KVMHypervisor: KVM Capability %s (Enum: %d) check: %t (Placeholder: true)\n", name, capEnum, caps[name])
+		if !caps[name] && isCriticalKvmCapability(name) {
+			 // syscall.Close(kvmFileDescriptor) // In real code
+			 return nil, fmt.Errorf("critical KVM capability %s not supported", name)
 		}
-
-		if !h.kvmCapabilities[capName] && isCriticalCapability(capName) {
-			file.Close()
-			return nil, fmt.Errorf("critical KVM capability %s not supported by host", capName)
-		}
 	}
 
-	// Specifically log if CPU has VT-x/AMD-V enabled (this is usually checked by KVM module loading,
-	// but can be re-verified or logged based on KVM_CAP_VMX / KVM_CAP_SVM if available, or CPUID checks)
-	// This is more about confirming the environment than enabling it, as KVM relies on it.
-	fmt.Println("Conceptual KVM: Hardware virtualization extensions (VT-x/AMD-V) assumed to be enabled by host BIOS/kernel for KVM to function.")
-
-	// Populate general capabilities (simplified) - this might be better in a separate GetCapabilities that calls OS utils
-	h.capabilities = HostCapabilityInfo{
-		CPUType:        "x86-64 (Conceptual - KVM Host)",
-		CPUFeatures:    []string{"VMX/SVM (Assumed by KVM)"}, // More details from CPUID in GetHostHardwareCapabilities
-		TotalMemoryMB:  2048,                               // Placeholder, GetHostHardwareCapabilities should get actual
-		SupportedVMExt: true,                               // Confirmed by KVM functioning
-		KVMAPIVersion:  h.apiVersion,
-	}
-
-	return h, nil
+	return &KVMHypervisor{
+		kvmFd:           kvmFileDescriptor,
+		apiVersion:      int(apiVerResult),
+		kvmCapabilities: caps,
+	}, nil
 }
 
-// isCriticalCapability helper function
-func isCriticalCapability(capName string) bool {
-	critical := []string{"KVM_CAP_USER_MEMORY", "KVM_CAP_IRQCHIP", "KVM_CAP_HLT"}
+// isCriticalKvmCapability helper function
+func isCriticalKvmCapability(capName string) bool {
+	// Define which capabilities are absolutely essential for V-Architect's core KVM functions
+	critical := []string{"USER_MEMORY", "IRQCHIP", "HLT"} // Example critical capabilities
 	for _, c := range critical {
 		if c == capName {
 			return true
@@ -128,129 +123,111 @@ func isCriticalCapability(capName string) bool {
 	return false
 }
 
-
-// GetAPIVersion returns the KVM API version. (Now set during NewKVMHypervisor)
-// GetAPIVersion returns the KVM API version. (Now set during NewKVMHypervisor)
-func (h *KVMHypervisor) GetAPIVersion() (int, error) {
-	if h.apiVersion == 0 {
-		// This suggests NewKVMHypervisor didn't complete or was bypassed.
-		return 0, fmt.Errorf("KVM API version not initialized")
-	}
-	return h.apiVersion, nil
+// GetHostCapabilities retrieves and formats host system capabilities.
+// This is a simplified version; a more detailed one might live in capabilities.go
+// and use OS utilities (lspci, /proc/cpuinfo, sysfs etc.)
+func (h *KVMHypervisor) GetHostCapabilities() (*HostCapabilityInfo, error) {
+	fmt.Println("Conceptual KVMHypervisor: GetHostCapabilities called")
+	// In a real scenario, this would gather more comprehensive info.
+	// For now, it primarily reflects KVM-specific details initialized.
+	return &HostCapabilityInfo{
+		CPUType:         "x86-64 Generic (from KVMHypervisor)",
+		CPUFeatures:     []string{"VMX/AMD-V (assumed by KVM)"}, // Should be confirmed via CPUID
+		TotalMemoryGB:   16, // Placeholder - should come from actual host scan
+		KVMAPIVersion:   h.apiVersion,
+		KVMCapabilities: h.kvmCapabilities, // Return the map of checked KVM caps
+	}, nil
 }
 
-// checkKvmExtension is an internal helper to call KVM_CHECK_EXTENSION
-// In a real implementation, this would use the syscall.
-func (h *KVMHypervisor) checkKvmExtension(capConstant int) (bool, error) {
-	// ret, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(h.kvmFd), KVM_CHECK_EXTENSION, uintptr(capConstant))
-	// if errno != 0 {
-	//     return false, errno
-	// }
-	// return ret > 0, nil
+// CreateVM creates a KVM VM instance (returns vmFd).
+// config parameter is of type *pb.VMConfig from the generated protobuf Go types.
+func (h *KVMHypervisor) CreateVM(vmID string, config *pb.VMConfig) (int, error) {
+	fmt.Printf("Conceptual KVMHypervisor: CreateVM called for VM ID: %s (Name: %s)\n", vmID, config.GetVmName())
 
-	// Placeholder logic for conceptual progress:
-	fmt.Printf("Conceptual KVM: KVM_CHECK_EXTENSION ioctl called for cap constant %d.\n", capConstant)
-	// Assume critical ones checked in NewKVMHypervisor are true, others might be false.
-	// This is simplified; NewKVMHypervisor now stores these in h.kvmCapabilities.
-	// This method could directly return from h.kvmCapabilities if populated for all known caps.
-	for name, val := range h.kvmCapabilities { // Check against known and checked capabilities
-		// This is a bit circular if NewKVMHypervisor calls this.
-		// The direct check logic is now primarily in NewKVMHypervisor.
-		// This function would be used if checking a cap *not* in the essentialCaps list later.
-		// For now, let's assume it refers to what was populated.
-		// A more robust way would be to have a map of int to string for cap constants.
-		// For this example, let's just reflect that essential ones were "checked".
-		if capConstant == KVM_CAP_USER_MEMORY || capConstant == KVM_CAP_IRQCHIP || capConstant == KVM_CAP_SET_TSS_ADDR {
-			return h.kvmCapabilities[name], nil // This is not quite right, matching int to string.
+	// vmFdInt, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(h.kvmFd), KVM_CREATE_VM_CONCEPTUAL, 0)
+	// if errno != 0 {
+	//     return -1, fmt.Errorf("KVM_CREATE_VM ioctl failed for VM %s: %w", vmID, errno)
+	// }
+	// vmFd := int(vmFdInt)
+	vmFd_placeholder := os.Getpid() + len(vmID) // Unique placeholder FD for this conceptual run
+	fmt.Printf("Conceptual KVMHypervisor: KVM_CREATE_VM successful for VM %s, vmFd: %d (placeholder)\n", vmID, vmFd_placeholder)
+
+	// Minimal essential KVM VM setup after KVM_CREATE_VM
+	// This setup is crucial for the VM to be able to boot an OS.
+	// 1. Set TSS address (for x86)
+	// _, _, errnoSetTSS := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vmFd_placeholder), KVM_SET_TSS_ADDR_CONCEPTUAL, 0xfffbd000) // Example address
+	// if errnoSetTSS != 0 {
+	//    syscall.Close(vmFd_placeholder) // Important to close vmFd on failure
+	//    return -1, fmt.Errorf("KVM_SET_TSS_ADDR failed for VM %s: %w", vmID, errnoSetTSS)
+	// }
+	fmt.Printf("Conceptual KVMHypervisor: KVM_SET_TSS_ADDR called for VM %s.\n", vmID)
+
+	// 2. Create in-kernel IRQ chip
+	// _, _, errnoCreateIRQChip := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vmFd_placeholder), KVM_CREATE_IRQCHIP_CONCEPTUAL, 0)
+	// if errnoCreateIRQChip != 0 {
+	//    syscall.Close(vmFd_placeholder)
+	//    return -1, fmt.Errorf("KVM_CREATE_IRQCHIP failed for VM %s: %w", vmID, errnoCreateIRQChip)
+	// }
+	fmt.Printf("Conceptual KVMHypervisor: KVM_CREATE_IRQCHIP called for VM %s.\n", vmID)
+
+	// 3. Create PIT (Programmable Interval Timer)
+	// _, _, errnoCreatePIT2 := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vmFd_placeholder), KVM_CREATE_PIT2_CONCEPTUAL, 0 /* &kvm_pit_config */)
+	// if errnoCreatePIT2 != 0 {
+	//    syscall.Close(vmFd_placeholder)
+	//    return -1, fmt.Errorf("KVM_CREATE_PIT2 failed for VM %s: %w", vmID, errnoCreatePIT2)
+	// }
+	fmt.Printf("Conceptual KVMHypervisor: KVM_CREATE_PIT2 called for VM %s.\n", vmID)
+
+	// Further VM setup (memory mapping, vCPU creation) will be handled by VMManager using this vmFd.
+	return vmFd_placeholder, nil
+}
+
+// CloseVMContext closes the KVM VM file descriptor.
+func (h *KVMHypervisor) CloseVMContext(vmFd int) error {
+	fmt.Printf("Conceptual KVMHypervisor: Closing KVM VM context (fd: %d).\n", vmFd)
+	// return syscall.Close(vmFd)
+	return nil // Placeholder for actual close
+}
+
+// Close the main KVM system file descriptor.
+func (h *KVMHypervisor) Close() error {
+	if h.kvmFd > 0 { // Check if FD is conceptually valid
+		// In real code: err := syscall.Close(h.kvmFd)
+		// h.kvmFd = -1 // Mark as closed
+		// return err
+		fmt.Printf("Conceptual KVMHypervisor: Closed KVM system FD: %d\n", h.kvmFd)
+		h.kvmFd = 0 // Mark as closed for conceptual purpose
+	}
+	return nil
+}
+
+// CheckExtension checks for a specific KVM capability using its KVM_CAP_* enum value.
+// This is a more direct way if the capability wasn't checked at init or is optional.
+func (h *KVMHypervisor) CheckExtension(capEnum int) (bool, error) {
+	fmt.Printf("Conceptual KVMHypervisor: CheckExtension called for capEnum %d\n", capEnum)
+	// ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(h.kvmFd), KVM_CHECK_EXTENSION_CONCEPTUAL, uintptr(capEnum))
+	// if errno != 0 {
+	//     return false, fmt.Errorf("KVM_CHECK_EXTENSION ioctl failed for cap %d: %w", capEnum, errno)
+	// }
+	// For conceptual, assume true if it's one of the known essential ones, otherwise false.
+	for _, knownCapEnum := range map[string]int{
+		"USER_MEMORY": KVM_CAP_USER_MEMORY_ENUM, "IRQCHIP": KVM_CAP_IRQCHIP_ENUM, "HLT": KVM_CAP_HLT_ENUM,
+	} {
+		if capEnum == knownCapEnum {
+			fmt.Printf("Conceptual KVMHypervisor: Capability %d is known and supported (placeholder).\n", capEnum)
+			return true, nil
 		}
 	}
-	// For capabilities not in the essential list, assume false or perform a new conceptual check.
-	return false, nil // Default for un-checked / non-essential caps conceptually
+	fmt.Printf("Conceptual KVMHypervisor: Capability %d is not essential or unknown, assuming not supported (placeholder).\n", capEnum)
+	return false, nil
 }
 
-
-// CheckExtension checks for a specific KVM capability using its constant value.
-// This method now primarily serves as a public accessor to the pre-checked capabilities
-// or for checking non-essential ones on-the-fly.
-func (h *KVMHypervisor) CheckExtension(capToQuery int) (bool, error) {
-    // For conceptual purposes, let's find the name if it was an "essential" one.
-    // In a real system, you'd likely have a mapping from int to string or check directly.
-    var capNameFound string
-    // This is inefficient, just for conceptual mapping back from the placeholder int constants
-    // to the string keys used in h.kvmCapabilities during NewKVMHypervisor.
-    // A proper implementation would use the KVM_CAP_* constants directly if checking on the fly,
-    // or look up by a string name if that's how they are stored.
-    // Given the current structure, this is a bit contrived.
-    // The main capability check happens in NewKVMHypervisor.
-
-    // Let's simulate that if it's a known critical cap, we return its stored value.
-    // This is not a robust way to map int back to string for lookup.
-    // A better approach for this method, if it's meant for arbitrary caps:
-    // return h.checkKvmExtension(capToQuery)
-
-    // Simpler conceptual approach for this method now:
-    // Assume common/critical ones were checked and stored by name in NewKVMHypervisor.
-    // This method is less useful if all checks are done upfront.
-    // If it's for arbitrary KVM_CAP_*, it should call the ioctl.
-
-    // For now, let's assume it's a fresh check for conceptual clarity of this method's original intent.
-    return h.checkKvmExtension(capToQuery)
-}
-
-
-// CreateVMContext creates a KVM VM file descriptor.
-func (h *KVMHypervisor) CreateVMContext() (int, error) {
-	// Conceptual: Use ioctl_int template for KVM_CREATE_VM
-	// vm_fd, err := unix.IoctlGetInt(h.kvmFd, KVM_CREATE_VM_IOCTL_NUM)
-	fmt.Println("Conceptual KVM: KVM_CREATE_VM ioctl called.")
-	// For conceptual progress, let's simulate a successful VM fd creation.
-	// In reality, this fd would be different each time.
-	// We need a placeholder that isn't a real, openable FD for most OS calls,
-	// but acts as a handle. A negative number or high number could work.
-	// For simplicity in conceptual code, let's use a positive mock FD.
-	mockVmFd := 1001 // Placeholder, not a real FD
-
-	// Conceptual: Set up basic VM properties
-	// _, err = unix.Ioctl(mockVmFd, KVM_SET_TSS_ADDR_IOCTL_NUM, some_address_calculation)
-	// if err != nil { return 0, fmt.Errorf("KVM_SET_TSS_ADDR failed: %w", err) }
-	fmt.Printf("Conceptual KVM: KVM_SET_TSS_ADDR ioctl called on vm_fd %d.\n", mockVmFd)
-
-	// Conceptual: Create IRQ chip
-	// _, err = unix.Ioctl(mockVmFd, KVM_CREATE_IRQCHIP_IOCTL_NUM, 0)
-	// if err != nil { return 0, fmt.Errorf("KVM_CREATE_IRQCHIP failed: %w", err) }
-	fmt.Printf("Conceptual KVM: KVM_CREATE_IRQCHIP ioctl called on vm_fd %d.\n", mockVmFd)
-
-	// Conceptual: Create PIT
-	// _, err = unix.Ioctl(mockVmFd, KVM_CREATE_PIT2_IOCTL_NUM, &some_pit_config_struct)
-	// if err != nil { return 0, fmt.Errorf("KVM_CREATE_PIT2 failed: %w", err) }
-	fmt.Printf("Conceptual KVM: KVM_CREATE_PIT2 ioctl called on vm_fd %d.\n", mockVmFd)
-
-	return mockVmFd, nil
-}
-
-// CloseVMContext would close the VM file descriptor.
-// For KVM, this means closing the vm_fd.
-func (h *KVMHypervisor) CloseVMContext(vm_fd int) error {
-	fmt.Printf("Conceptual KVM: Closing VM context (fd: %d).\n", vm_fd)
-	// In a real implementation: return syscall.Close(vm_fd)
-	return nil
-}
-
-
-// GetCapabilities returns stored host/hypervisor capabilities.
-func (h *KVMHypervisor) GetCapabilities() (*HostCapabilityInfo, error) {
-	// Return a copy to prevent modification
-	caps := h.capabilities
-	return &caps, nil
-}
-
-// Close closes the main /dev/kvm file descriptor.
-func (h *KVMHypervisor) Close() error {
-	if h.kvmFile != nil {
-		fmt.Println("Conceptual KVM: Closing /dev/kvm file descriptor.")
-		return h.kvmFile.Close()
-	}
-	return nil
+// GetAPIVersion returns the cached KVM API version.
+func (h *KVMHypervisor) GetAPIVersion() (int, error) {
+    if h.apiVersion == 0 {
+        return 0, fmt.Errorf("KVM API version not initialized or KVMHypervisor not properly created")
+    }
+    return h.apiVersion, nil
 }
 
 // Ensure KVMHypervisor satisfies the Hypervisor interface.

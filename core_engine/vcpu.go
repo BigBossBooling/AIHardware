@@ -29,44 +29,47 @@ const (
 
 // kvm_run structure is very complex. This is a gross simplification for conceptual use.
 // A real implementation would use Cgo to include <linux/kvm.h> or define a detailed Go struct.
-type kvmRun struct {
+// For KVM_EXIT_IO, we'd need fields like:
+// direction, size, port, count, data_offset.
+type kvm_run_io_data struct { // Conceptual, based on actual kvm_run.io struct
+    direction uint8
+    size      uint8
+    port      uint16
+    count     uint32
+    data_offset uint64 // Offset from start of kvm_run struct to data
+}
+
+type kvmRun struct { // Simplified for conceptual use
 	exit_reason uint32
-	// ... many other fields for different exit types (io, mmio, debug, etc.)
-	// Example for IO:
-	// struct {
-	//   direction uint8
-	//   size      uint8
-	//   port      uint16
-	//   count     uint32
-	//   data_offset uint64
-	// } io;
+	// ... other common fields ...
+	io kvm_run_io_data // Nested struct for I/O exit details
+	// ... other exit specific unions/structs ...
 }
 
 
 // VCPU represents a virtual CPU.
 type VCPU struct {
-	id      int    // vCPU ID within the VM
-	vmFd    int    // File descriptor of the parent KVM VM
-	vcpuFd  int    // File descriptor for this vCPU
-	kvmRun  *kvmRun // Pointer to the mmap'd KVM run structure (using simplified struct)
-	// In a real scenario, kvmRun would be a pointer to a more accurately defined struct or unsafe.Pointer
-	// For conceptual use, *byte was in description, but having a minimal struct is slightly better.
-	// Let's stick to the description's *byte for directness if kvmRun struct is too much detail.
-	kvmRunRawPtr *byte // As per description
+	id           int    // vCPU ID within the VM
+	vmFd         int    // File descriptor of the parent KVM VM
+	vcpuFd       int    // File descriptor for this vCPU
+	kvmRunRawPtr *byte  // Raw pointer to the mmap'd KVM run structure
+	kvmRun       *kvmRun // Mapped KVM run structure (for easier conceptual access)
+	vm           *VirtualMachine // Reference to parent VM for accessing devices
 }
 
 // NewVCPU creates and initializes a new vCPU for the given KVM VM.
-// vmFd is the file descriptor for the KVM virtual machine.
+// vm is a pointer to the parent VirtualMachine instance.
 // id is the vCPU identifier (e.g., 0, 1, ...).
 // kvmSystemFd is the fd for /dev/kvm, needed for KVM_GET_VCPU_MMAP_SIZE.
-func NewVCPU(vmFd int, id int, kvmSystemFd int) (*VCPU, error) {
-	fmt.Printf("Conceptual VCPU: NewVCPU called for VM FD: %d, vCPU ID: %d, KVM System FD: %d\n", vmFd, id, kvmSystemFd)
+func NewVCPU(vm *VirtualMachine, id int, kvmSystemFd int) (*VCPU, error) {
+	fmt.Printf("Conceptual VCPU: NewVCPU called for VM ID: %s, vCPU ID: %d, KVM System FD: %d\n", vm.ID, id, kvmSystemFd)
 
-	// 1. Call KVM_CREATE_VCPU ioctl on vmFd to get vcpu_fd.
+	// 1. Call KVM_CREATE_VCPU ioctl on vm.vmFd to get vcpu_fd.
 	//    vcpu_fd, err := unix.IoctlRetInt(vmFd, KVM_CREATE_VCPU_IOCTL, uintptr(id))
 	//    if err != nil { return nil, fmt.Errorf("KVM_CREATE_VCPU failed for vCPU %d: %w", id, err) }
 	vcpu_fd_placeholder := 2000 + id // Placeholder, unique per vCPU conceptually
-	fmt.Printf("Conceptual VCPU: KVM_CREATE_VCPU ioctl called for vCPU ID %d. Got vcpu_fd: %d (placeholder)\n", id, vcpu_fd_placeholder)
+	// Real call: vcpu_fd, err := unix.IoctlRetInt(vm.vmFd, KVM_CREATE_VCPU_IOCTL, uintptr(id))
+	fmt.Printf("Conceptual VCPU: KVM_CREATE_VCPU ioctl called for VM ID %s, vCPU ID %d. Got vcpu_fd: %d (placeholder)\n", vm.ID, id, vcpu_fd_placeholder)
 
 
 	// 2. Get KVM run structure size via KVM_GET_VCPU_MMAP_SIZE.
@@ -84,15 +87,20 @@ func NewVCPU(vmFd int, id int, kvmSystemFd int) (*VCPU, error) {
 	// Using a placeholder allocation for the conceptual raw pointer
 	conceptualKvmRunSpace := make([]byte, mmap_size_placeholder)
 	kvmRunRawPtr_placeholder := &conceptualKvmRunSpace[0]
+	// In a real implementation, kvmRun would be properly cast:
+	// kvmRun_typed_ptr := (*kvmRun)(unsafe.Pointer(kvmRunRawPtr_placeholder))
+	kvmRun_typed_ptr_placeholder := &kvmRun{} // Placeholder for typed access
+
 	fmt.Printf("Conceptual VCPU: KVM run structure mmap'd for vCPU %d (placeholder address: %p)\n", id, kvmRunRawPtr_placeholder)
 
 
 	vcpu := &VCPU{
 		id:           id,
-		vmFd:         vmFd,
+		vmFd:         vm.vmFd, // Store vmFd from parent VM
 		vcpuFd:       vcpu_fd_placeholder,
 		kvmRunRawPtr: kvmRunRawPtr_placeholder,
-		// kvmRun: (*kvmRun)(unsafe.Pointer(kvmRunRawPtr_placeholder)), // If using the simplified struct
+		kvmRun:       kvmRun_typed_ptr_placeholder, // Store the conceptually typed pointer
+		vm:           vm,                         // Store reference to parent VM
 	}
 
 	// 4. Initial MSR and CPUID setup (delegated to arch-specific function).
@@ -160,39 +168,93 @@ func (v *VCPU) Run() error {
 		fmt.Printf("Conceptual VCPU %d: KVM_RUN ioctl executed.\n", v.id)
 
 		// Access exit reason from the mmap'd region (v.kvmRunRawPtr)
-		// This requires casting v.kvmRunRawPtr to a pointer to the actual kvm_run struct
-		// and then accessing the exit_reason field.
-		// For conceptual purposes, let's assume we get an exit reason.
-		// currentExitReason := (*kvmRun)(unsafe.Pointer(v.kvmRunRawPtr)).exit_reason
+		// Access exit reason from the mmap'd region (v.kvmRun)
+		// currentExitReason := v.kvmRun.exit_reason // Access through the typed conceptual pointer
 
-		// Simulate a HLT exit for this conceptual example to eventually stop the loop.
-		// In a real scenario, other exits (IO, MMIO) would be handled.
-		currentExitReason_placeholder := uint32(5) // KVM_EXIT_HLT placeholder
-		fmt.Printf("Conceptual VCPU %d: VM-exit. Reason: %d (placeholder, e.g., HLT).\n", v.id, currentExitReason_placeholder)
+		// Simulate different exit reasons for conceptual flow.
+		// In reality, this value comes from KVM after KVM_RUN.
+		var currentExitReason uint32
+		if v.id == 0 && v.vm.Config.SerialPorts != nil && len(v.vm.Config.SerialPorts) > 0 { // Simulate COM1 output from vCPU0
+			currentExitReason = 2 // KVM_EXIT_IO placeholder
+			// Simulate I/O write data for COM1
+			v.kvmRun.io.direction = 0 // KVM_EXIT_IO_OUT placeholder
+			v.kvmRun.io.port = DEFAULT_SERIAL_IO_BASE_COM1
+			v.kvmRun.io.size = 1
+			v.kvmRun.io.count = 1
+			// Conceptually, guest data would be at v.kvmRunRawPtr + v.kvmRun.io.data_offset
+			// For this test, we don't need to fill data, just simulate the exit.
+			// Let's assume a character 'A' is being written.
+			// (*( (*byte)(unsafe.Pointer(v.kvmRunRawPtr + v.kvmRun.io.data_offset)) )) = 'A'
+		} else {
+			currentExitReason = 5 // KVM_EXIT_HLT placeholder
+		}
 
+		fmt.Printf("Conceptual VCPU %d (VM %s): VM-exit. Reason: %d.\n", v.id, v.vm.ID, currentExitReason)
 
-		switch currentExitReason_placeholder {
-		// case KVM_EXIT_IO:
-		//    // Handle I/O: get port, size, direction, data from kvm_run.io
-		//    // Call device model to emulate the I/O operation.
-		//    fmt.Printf("Conceptual VCPU %d: Handling KVM_EXIT_IO.\n", v.id)
+		switch currentExitReason {
+		case 2: // KVM_EXIT_IO placeholder
+			port := v.kvmRun.io.port
+			dataOffsetBytes := v.kvmRun.io.data_offset
+			size := v.kvmRun.io.size
+			direction := v.kvmRun.io.direction // 0 for OUT, 1 for IN
+
+			// Conceptual: dataPtr := unsafe.Pointer(v.kvmRunRawPtr + dataOffsetBytes)
+			// In a real scenario, data needs to be read from/written to this dataPtr based on direction and size.
+
+			handled := false
+			// Dispatch to serial ports if port matches
+			// Lock the VM's resourceLock if accessing shared device list, or ensure serialPorts is immutable post-init.
+			// Assuming serialPorts is stable after vm.initializeDevices().
+			for _, sp := range v.vm.serialPorts { // Access parent VM's serial ports
+				if port >= sp.ioBaseAddr && port < (sp.ioBaseAddr+8) { // 8 standard UART registers
+					if direction == 0 { // KVM_EXIT_IO_OUT
+						// Conceptual: read data from guest memory via dataPtr.
+						// For simplicity, assume 1 byte write and data is already in a conceptual var.
+						var writeData uint64 = 'A' // Example data
+						if port == sp.ioBaseAddr { // THR write
+							fmt.Printf("Conceptual VCPU %d (VM %s): KVM_EXIT_IO_OUT to Serial %s (Port 0x%X, Data 0x%X)\n", v.id, v.vm.ID, sp.id, port, writeData)
+							err := sp.HandlePIOWrite(port, writeData, int(size))
+							if err != nil { fmt.Printf("Error writing to serial port %s: %v\n", sp.id, err) }
+						} else {
+							// Handle writes to other serial registers (IER, LCR, etc.)
+							err := sp.HandlePIOWrite(port, writeData, int(size)) // Pass 0 for non-data regs for now
+							if err != nil { fmt.Printf("Error writing to serial port %s register 0x%X: %v\n", sp.id, port, err) }
+						}
+					} else { // KVM_EXIT_IO_IN
+						readData, err := sp.HandlePIORead(port, int(size))
+						if err != nil {
+							fmt.Printf("Error reading from serial port %s register 0x%X: %v\n", sp.id, port, err)
+						} else {
+							// Conceptual: write readData back to guest memory via dataPtr
+							// For a byte read: *(*byte)(dataPtr) = byte(readData)
+							fmt.Printf("Conceptual VCPU %d (VM %s): KVM_EXIT_IO_IN from Serial %s (Port 0x%X) -> Data 0x%X\n", v.id, v.vm.ID, sp.id, port, readData)
+						}
+					}
+					handled = true
+					break
+				}
+			}
+			if !handled {
+				fmt.Printf("Conceptual VCPU %d (VM %s): Unhandled KVM_EXIT_IO at port 0x%X\n", v.id, v.vm.ID, port)
+			}
+			// Simulate HLT after I/O to stop for this conceptual example
+			if v.id == 0 && port == DEFAULT_SERIAL_IO_BASE_COM1 {
+				fmt.Printf("Conceptual VCPU %d (VM %s): Simulating HLT after serial output to stop test.\n", v.id, v.vm.ID)
+				return nil // Exit run loop
+			}
+
 		// case KVM_EXIT_MMIO:
-		//    // Handle MMIO: get address, size, data from kvm_run.mmio
-		//    // Call device model for MMIO.
-		//    fmt.Printf("Conceptual VCPU %d: Handling KVM_EXIT_MMIO.\n", v.id)
-		case 5: // KVM_EXIT_HLT (placeholder value)
-			fmt.Printf("Conceptual VCPU %d: Guest HLT instruction. Pausing/yielding conceptually.\n", v.id)
-			// In a real hypervisor, this might involve descheduling the vCPU thread
-			// until an interrupt arrives for this vCPU.
-			// For this conceptual loop, we might just return or break after a few HLTs.
-			// To prevent an infinite conceptual loop, let's return after a HLT.
-			fmt.Printf("Conceptual VCPU %d: Exiting Run() loop due to HLT.\n", v.id)
+		//    fmt.Printf("Conceptual VCPU %d: Handling KVM_EXIT_MMIO (not implemented).\n", v.id)
+		case 5: // KVM_EXIT_HLT placeholder
+			fmt.Printf("Conceptual VCPU %d (VM %s): Guest HLT instruction. Pausing/yielding conceptually.\n", v.id, v.vm.ID)
+			// For this conceptual loop, exit after HLT.
+			fmt.Printf("Conceptual VCPU %d (VM %s): Exiting Run() loop due to HLT.\n", v.id, v.vm.ID)
 			return nil
-		// case KVM_EXIT_SHUTDOWN: // Or other system events
-		//    fmt.Printf("Conceptual VCPU %d: Shutdown requested by guest. Exiting Run() loop.\n", v.id)
-		//    return nil // Exit run loop, signaling VM to stop
+		// case KVM_EXIT_SHUTDOWN:
+		//    fmt.Printf("Conceptual VCPU %d (VM %s): Shutdown requested by guest. Exiting Run() loop.\n", v.id, v.vm.ID)
+		//    return nil
 		default:
-			return fmt.Errorf("unhandled KVM exit reason: %d for vCPU %d", currentExitReason_placeholder, v.id)
+			return fmt.Errorf("unhandled KVM exit reason: %d for vCPU %d in VM %s", currentExitReason, v.id, v.vm.ID)
 		}
 		// time.Sleep(50 * time.Millisecond) // Conceptual delay if not HLT/SHUTDOWN
 	}
