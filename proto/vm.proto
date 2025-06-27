@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "v-architect/core_engine/proto";
+
+// VMConfig defines the configuration for a virtual machine.
+message VMConfig {
+  string vm_id = 1;
+  int64 memory_mb = 2;
+  int32 vcpu_count = 3;
+  // Add other VM configuration fields as needed, e.g.:
+  // string kernel_image_path = 4;
+  // string initrd_path = 5;
+  // repeated Disk disks = 6;
+  // repeated NetworkInterface network_interfaces = 7;
+}
+
+// CoreHypervisorService provides information about the hypervisor.
+service CoreHypervisorService {
+  // GetHypervisorInfo returns basic information about the hypervisor.
+  rpc GetHypervisorInfo(GetHypervisorInfoRequest) returns (GetHypervisorInfoResponse);
+}
+
+message GetHypervisorInfoRequest {}
+
+message GetHypervisorInfoResponse {
+  string hypervisor_type = 1; // e.g., "KVM", "QEMU"
+  string version = 2;
+  // Add other hypervisor details
+}
+
+// VMService provides methods to manage virtual machines.
+service VMService {
+  // StartVM starts a virtual machine based on the provided configuration.
+  rpc StartVM(StartVMRequest) returns (StartVMResponse);
+  // StopVM stops a running virtual machine.
+  rpc StopVM(StopVMRequest) returns (StopVMResponse);
+  // GetVMInfo retrieves information about a specific VM.
+  rpc GetVMInfo(GetVMInfoRequest) returns (GetVMInfoResponse);
+  // PauseVM pauses a running virtual machine.
+  rpc PauseVM(PauseVMRequest) returns (PauseVMResponse);
+  // ResumeVM resumes a paused virtual machine.
+  rpc ResumeVM(ResumeVMRequest) returns (ResumeVMResponse);
+}
+
+message StartVMRequest {
+  VMConfig config = 1;
+}
+
+message StartVMResponse {
+  string vm_id = 1;
+  string status = 2; // e.g., "RUNNING", "ERROR"
+  string message = 3; // Optional: error message or details
+}
+
+message StopVMRequest {
+  string vm_id = 1;
+}
+
+message StopVMResponse {
+  string vm_id = 1;
+  string status = 2; // e.g., "STOPPED", "ERROR"
+  string message = 3;
+}
+
+message GetVMInfoRequest {
+  string vm_id = 1;
+}
+
+message GetVMInfoResponse {
+  VMConfig config = 1;
+  string status = 2; // e.g., "RUNNING", "STOPPED", "PAUSED"
+  // Add other runtime VM info
+}
+
+message PauseVMRequest {
+  string vm_id = 1;
+}
+
+message PauseVMResponse {
+  string vm_id = 1;
+  string status = 2; // e.g., "PAUSED", "ERROR"
+  string message = 3;
+}
+
+message ResumeVMRequest {
+  string vm_id = 1;
+}
+
+message ResumeVMResponse {
+  string vm_id = 1;
+  string status = 2; // e.g., "RUNNING", "ERROR"
+  string message = 3;
+}
