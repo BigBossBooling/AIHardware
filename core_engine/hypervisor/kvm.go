@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	"v-architect/core_engine/devices" // Added import for devices package
+
 	"golang.org/x/sys/unix"
 )
 
@@ -56,6 +58,7 @@ type VirtualMachine struct {
 
 	memoryRegions []*MemoryRegion
 	vcpus         []*VCPU
+	serialPort    *devices.SerialPortDevice // Virtual serial port
 }
 
 // VCPU represents a virtual CPU.
@@ -151,10 +154,14 @@ func (h *KVMHypervisor) CreateVM(machineType ...uint64) (*VirtualMachine, error)
 		return nil, fmt.Errorf("KVM_CREATE_VM ioctl returned invalid fd: %d", vmFd)
 	}
 	log.Printf("Successfully created VM with fd: %d from KVM fd: %d", vmFd, h.kvmFd.Fd())
-	return &VirtualMachine{
+	vm := &VirtualMachine{
 		vmFd:   vmFd,
 		state:  StateStopped,
-	}, nil
+	}
+	vm.serialPort = devices.NewSerialPortDevice(devices.COM1_BASE_ADDR, os.Stdout)
+	log.Printf("Initialized serial port for VM (vmFd: %d) at base_addr=0x%X", vm.vmFd, vm.serialPort.BaseAddr())
+
+	return vm, nil
 }
 
 // GetState returns the current state of the VM.
@@ -178,32 +185,28 @@ func (vm *VirtualMachine) Close() error {
 	log.Printf("VirtualMachine.Close called for vmFd: %d", vm.vmFd)
 	vm.mu.Lock()
 
-	// Stop all VCPUs first
 	for _, vcpu := range vm.vcpus {
 		if vcpu.runLoopExitChan != nil {
 			select {
-			case <-vcpu.runLoopExitChan: // Already closed
+			case <-vcpu.runLoopExitChan:
 			default:
 				close(vcpu.runLoopExitChan)
 			}
 		}
 	}
-	// Wait for all VCPU runLoops to finish
 	for _, vcpu := range vm.vcpus {
 		if vcpu.runLoopDoneChan != nil {
 			<-vcpu.runLoopDoneChan
 		}
-		// Now that the runLoop is done, VCPU.Close can be called to clean vcpu fd and mmap
-		if vcpu != nil { // Check if vcpu itself is nil before calling Close
+		if vcpu != nil {
 			vcpu.Close()
 		}
 	}
-	vm.vcpus = nil // Clear the slice
+	vm.vcpus = nil
 
 	vm.state = StateStopped
 	vm.mu.Unlock()
 
-	// Unmap user memory regions
 	for i, region := range vm.memoryRegions {
 		if region.backingStore != nil {
 			log.Printf("Unmapping memory region slot %d (GPA: 0x%x, Size: 0x%x) for VM (vmFd: %d)",
@@ -363,48 +366,55 @@ func (vcpu *VCPU) runLoop() {
 		}
 
 		exitReason := GetExitReasonVerified(vcpu.kvmRunData)
-		log.Printf("KVM_RUN exited on VCPU (id: %d, fd: %d) with reason: 0x%x (%s)", vcpu.id, vcpu.fd, exitReason, KvmExitReasonToString(exitReason))
+		// Limit verbose logging for frequent IO exits if necessary
+		// log.Printf("KVM_RUN exited on VCPU (id: %d, fd: %d) with reason: 0x%x (%s)", vcpu.id, vcpu.fd, exitReason, KvmExitReasonToString(exitReason))
 
-		stopVM := false
+		stopVMGlobal := false
 		continueLoop := true
 
 		switch exitReason {
 		case KVM_EXIT_HLT:
 			log.Printf("VCPU %d Halted.", vcpu.id)
-			stopVM = true
+			stopVMGlobal = true
 			continueLoop = false
 		case KVM_EXIT_SHUTDOWN:
 			log.Printf("VCPU %d initiated shutdown.", vcpu.id)
-			stopVM = true
+			stopVMGlobal = true
 			continueLoop = false
 		case KVM_EXIT_IO:
 			ioData := GetIoDataVerified(vcpu.kvmRunData)
-			direction := "IN"
-			if ioData.Direction == 1 { // KVM_EXIT_IO_OUT usually 1
-				direction = "OUT"
+			if vcpu.vm.serialPort != nil &&
+				ioData.Port >= vcpu.vm.serialPort.BaseAddr() &&
+				ioData.Port < vcpu.vm.serialPort.BaseAddr()+devices.NUM_SERIAL_REGISTERS {
+
+				err := vcpu.vm.serialPort.HandleIO(ioData.Port, unsafe.Pointer(&vcpu.kvmRunData[0]), ioData.Direction, ioData.Size, ioData.DataOffset)
+				if err != nil {
+					log.Printf("Error handling serial port IO for VCPU %d, port 0x%X: %v", vcpu.id, ioData.Port, err)
+				}
+			} else {
+				log.Printf("Unhandled KVM_EXIT_IO on VCPU %d: Port 0x%X (size %d, dir %d, count %d, offset 0x%X) not claimed by any device.",
+					vcpu.id, ioData.Port, ioData.Size, ioData.Direction, ioData.Count, ioData.DataOffset)
 			}
-			log.Printf("KVM_EXIT_IO on VCPU %d: dir=%s port=0x%x size=%d count=%d data_offset=0x%x",
-				vcpu.id, direction, ioData.Port, ioData.Size, ioData.Count, ioData.DataOffset)
 			continueLoop = true
 		case KVM_EXIT_FAIL_ENTRY:
 			failEntry := GetFailEntryDataVerified(vcpu.kvmRunData)
 			log.Printf("KVM_EXIT_FAIL_ENTRY on VCPU %d: hardware_entry_failure_reason=0x%x. Stopping VM.", vcpu.id, failEntry.HardwareEntryFailureReason)
 			vcpu.vm.SetState(StateError)
-			stopVM = true
+			stopVMGlobal = true
 			continueLoop = false
 		case KVM_EXIT_INTERNAL_ERROR:
 			internalErr := GetInternalErrorDataVerified(vcpu.kvmRunData)
 			log.Printf("KVM_EXIT_INTERNAL_ERROR on VCPU %d: suberror=0x%x. Stopping VM. Data[0]=0x%x", vcpu.id, internalErr.Suberror, internalErr.Data[0])
 			vcpu.vm.SetState(StateError)
-			stopVM = true
+			stopVMGlobal = true
 			continueLoop = false
 		default:
 			log.Printf("Unhandled KVM exit reason 0x%x (%s) on VCPU %d. VM will be stopped.", exitReason, KvmExitReasonToString(exitReason), vcpu.id)
-			stopVM = true
+			stopVMGlobal = true
 			continueLoop = false
 		}
 
-		if stopVM {
+		if stopVMGlobal {
 			currentState := vcpu.vm.GetState()
 			if currentState != StateError && currentState != StateStopping && currentState != StateStopped {
 				vcpu.vm.SetState(StateStopped)
@@ -434,7 +444,6 @@ func (vm *VirtualMachine) Stop() error {
 
 	vm.state = StateStopping
 
-	// Signal all VCPU runLoops to exit
 	for _, vcpu := range vm.vcpus {
 		if vcpu.runLoopExitChan != nil {
 			select {
@@ -444,9 +453,8 @@ func (vm *VirtualMachine) Stop() error {
 			}
 		}
 	}
-	vm.mu.Unlock() // Unlock before waiting
+	vm.mu.Unlock()
 
-	// Wait for all VCPU runLoops to confirm exit
 	for _, vcpu := range vm.vcpus {
 		if vcpu.runLoopDoneChan != nil {
 			<-vcpu.runLoopDoneChan

@@ -274,6 +274,13 @@ func GetInternalErrorDataVerified(kvmRunData []byte) KvmInternalError {
 // The KvmRun struct can be removed or kept for conceptual reference of the header.
 // The Getters are more robust for accessing union members.Tool output for `create_file_with_block`:
 
+// KVM_EXIT_IO direction constants (from C: enum kvm_exit_io_direction)
+const (
+	KVM_EXIT_IO_IN  uint8 = 0
+	KVM_EXIT_IO_OUT uint8 = 1
+)
+
+
 func KvmExitReasonToString(reason uint32) string {
 	switch reason {
 	case KVM_EXIT_UNKNOWN:
