@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.6
 // 	protoc        v3.21.12
-// source: vm.proto
+// source: v_architect_core.proto
 
-package proto
+package gen
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -33,7 +33,7 @@ type VMConfig struct {
 
 func (x *VMConfig) Reset() {
 	*x = VMConfig{}
-	mi := &file_vm_proto_msgTypes[0]
+	mi := &file_v_architect_core_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -45,7 +45,7 @@ func (x *VMConfig) String() string {
 func (*VMConfig) ProtoMessage() {}
 
 func (x *VMConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[0]
+	mi := &file_v_architect_core_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -58,7 +58,7 @@ func (x *VMConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMConfig.ProtoReflect.Descriptor instead.
 func (*VMConfig) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{0}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *VMConfig) GetVmId() string {
@@ -90,7 +90,7 @@ type GetHypervisorInfoRequest struct {
 
 func (x *GetHypervisorInfoRequest) Reset() {
 	*x = GetHypervisorInfoRequest{}
-	mi := &file_vm_proto_msgTypes[1]
+	mi := &file_v_architect_core_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -102,7 +102,7 @@ func (x *GetHypervisorInfoRequest) String() string {
 func (*GetHypervisorInfoRequest) ProtoMessage() {}
 
 func (x *GetHypervisorInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[1]
+	mi := &file_v_architect_core_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -115,7 +115,7 @@ func (x *GetHypervisorInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHypervisorInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetHypervisorInfoRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{1}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{1}
 }
 
 type GetHypervisorInfoResponse struct {
@@ -128,7 +128,7 @@ type GetHypervisorInfoResponse struct {
 
 func (x *GetHypervisorInfoResponse) Reset() {
 	*x = GetHypervisorInfoResponse{}
-	mi := &file_vm_proto_msgTypes[2]
+	mi := &file_v_architect_core_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +140,7 @@ func (x *GetHypervisorInfoResponse) String() string {
 func (*GetHypervisorInfoResponse) ProtoMessage() {}
 
 func (x *GetHypervisorInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[2]
+	mi := &file_v_architect_core_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +153,7 @@ func (x *GetHypervisorInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHypervisorInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetHypervisorInfoResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{2}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetHypervisorInfoResponse) GetHypervisorType() string {
@@ -179,7 +179,7 @@ type StartVMRequest struct {
 
 func (x *StartVMRequest) Reset() {
 	*x = StartVMRequest{}
-	mi := &file_vm_proto_msgTypes[3]
+	mi := &file_v_architect_core_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -191,7 +191,7 @@ func (x *StartVMRequest) String() string {
 func (*StartVMRequest) ProtoMessage() {}
 
 func (x *StartVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[3]
+	mi := &file_v_architect_core_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -204,7 +204,7 @@ func (x *StartVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartVMRequest.ProtoReflect.Descriptor instead.
 func (*StartVMRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{3}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartVMRequest) GetConfig() *VMConfig {
@@ -225,7 +225,7 @@ type StartVMResponse struct {
 
 func (x *StartVMResponse) Reset() {
 	*x = StartVMResponse{}
-	mi := &file_vm_proto_msgTypes[4]
+	mi := &file_v_architect_core_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -237,7 +237,7 @@ func (x *StartVMResponse) String() string {
 func (*StartVMResponse) ProtoMessage() {}
 
 func (x *StartVMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[4]
+	mi := &file_v_architect_core_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -250,7 +250,7 @@ func (x *StartVMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartVMResponse.ProtoReflect.Descriptor instead.
 func (*StartVMResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{4}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StartVMResponse) GetVmId() string {
@@ -283,7 +283,7 @@ type StopVMRequest struct {
 
 func (x *StopVMRequest) Reset() {
 	*x = StopVMRequest{}
-	mi := &file_vm_proto_msgTypes[5]
+	mi := &file_v_architect_core_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -295,7 +295,7 @@ func (x *StopVMRequest) String() string {
 func (*StopVMRequest) ProtoMessage() {}
 
 func (x *StopVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[5]
+	mi := &file_v_architect_core_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -308,7 +308,7 @@ func (x *StopVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopVMRequest.ProtoReflect.Descriptor instead.
 func (*StopVMRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{5}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *StopVMRequest) GetVmId() string {
@@ -329,7 +329,7 @@ type StopVMResponse struct {
 
 func (x *StopVMResponse) Reset() {
 	*x = StopVMResponse{}
-	mi := &file_vm_proto_msgTypes[6]
+	mi := &file_v_architect_core_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +341,7 @@ func (x *StopVMResponse) String() string {
 func (*StopVMResponse) ProtoMessage() {}
 
 func (x *StopVMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[6]
+	mi := &file_v_architect_core_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +354,7 @@ func (x *StopVMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopVMResponse.ProtoReflect.Descriptor instead.
 func (*StopVMResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{6}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *StopVMResponse) GetVmId() string {
@@ -387,7 +387,7 @@ type GetVMInfoRequest struct {
 
 func (x *GetVMInfoRequest) Reset() {
 	*x = GetVMInfoRequest{}
-	mi := &file_vm_proto_msgTypes[7]
+	mi := &file_v_architect_core_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -399,7 +399,7 @@ func (x *GetVMInfoRequest) String() string {
 func (*GetVMInfoRequest) ProtoMessage() {}
 
 func (x *GetVMInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[7]
+	mi := &file_v_architect_core_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -412,7 +412,7 @@ func (x *GetVMInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVMInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetVMInfoRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{7}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetVMInfoRequest) GetVmId() string {
@@ -432,7 +432,7 @@ type GetVMInfoResponse struct {
 
 func (x *GetVMInfoResponse) Reset() {
 	*x = GetVMInfoResponse{}
-	mi := &file_vm_proto_msgTypes[8]
+	mi := &file_v_architect_core_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +444,7 @@ func (x *GetVMInfoResponse) String() string {
 func (*GetVMInfoResponse) ProtoMessage() {}
 
 func (x *GetVMInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[8]
+	mi := &file_v_architect_core_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +457,7 @@ func (x *GetVMInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVMInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetVMInfoResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{8}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetVMInfoResponse) GetConfig() *VMConfig {
@@ -483,7 +483,7 @@ type PauseVMRequest struct {
 
 func (x *PauseVMRequest) Reset() {
 	*x = PauseVMRequest{}
-	mi := &file_vm_proto_msgTypes[9]
+	mi := &file_v_architect_core_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +495,7 @@ func (x *PauseVMRequest) String() string {
 func (*PauseVMRequest) ProtoMessage() {}
 
 func (x *PauseVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[9]
+	mi := &file_v_architect_core_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +508,7 @@ func (x *PauseVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseVMRequest.ProtoReflect.Descriptor instead.
 func (*PauseVMRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{9}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PauseVMRequest) GetVmId() string {
@@ -529,7 +529,7 @@ type PauseVMResponse struct {
 
 func (x *PauseVMResponse) Reset() {
 	*x = PauseVMResponse{}
-	mi := &file_vm_proto_msgTypes[10]
+	mi := &file_v_architect_core_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -541,7 +541,7 @@ func (x *PauseVMResponse) String() string {
 func (*PauseVMResponse) ProtoMessage() {}
 
 func (x *PauseVMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[10]
+	mi := &file_v_architect_core_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -554,7 +554,7 @@ func (x *PauseVMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseVMResponse.ProtoReflect.Descriptor instead.
 func (*PauseVMResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{10}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PauseVMResponse) GetVmId() string {
@@ -587,7 +587,7 @@ type ResumeVMRequest struct {
 
 func (x *ResumeVMRequest) Reset() {
 	*x = ResumeVMRequest{}
-	mi := &file_vm_proto_msgTypes[11]
+	mi := &file_v_architect_core_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -599,7 +599,7 @@ func (x *ResumeVMRequest) String() string {
 func (*ResumeVMRequest) ProtoMessage() {}
 
 func (x *ResumeVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[11]
+	mi := &file_v_architect_core_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -612,7 +612,7 @@ func (x *ResumeVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeVMRequest.ProtoReflect.Descriptor instead.
 func (*ResumeVMRequest) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{11}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ResumeVMRequest) GetVmId() string {
@@ -633,7 +633,7 @@ type ResumeVMResponse struct {
 
 func (x *ResumeVMResponse) Reset() {
 	*x = ResumeVMResponse{}
-	mi := &file_vm_proto_msgTypes[12]
+	mi := &file_v_architect_core_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -645,7 +645,7 @@ func (x *ResumeVMResponse) String() string {
 func (*ResumeVMResponse) ProtoMessage() {}
 
 func (x *ResumeVMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vm_proto_msgTypes[12]
+	mi := &file_v_architect_core_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -658,7 +658,7 @@ func (x *ResumeVMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeVMResponse.ProtoReflect.Descriptor instead.
 func (*ResumeVMResponse) Descriptor() ([]byte, []int) {
-	return file_vm_proto_rawDescGZIP(), []int{12}
+	return file_v_architect_core_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ResumeVMResponse) GetVmId() string {
@@ -682,11 +682,11 @@ func (x *ResumeVMResponse) GetMessage() string {
 	return ""
 }
 
-var File_vm_proto protoreflect.FileDescriptor
+var File_v_architect_core_proto protoreflect.FileDescriptor
 
-const file_vm_proto_rawDesc = "" +
+const file_v_architect_core_proto_rawDesc = "" +
 	"\n" +
-	"\bvm.proto\x12\x05proto\"[\n" +
+	"\x16v_architect_core.proto\x12\x05proto\"[\n" +
 	"\bVMConfig\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x03R\bmemoryMb\x12\x1d\n" +
@@ -732,22 +732,22 @@ const file_vm_proto_rawDesc = "" +
 	"\x06StopVM\x12\x14.proto.StopVMRequest\x1a\x15.proto.StopVMResponse\x12>\n" +
 	"\tGetVMInfo\x12\x17.proto.GetVMInfoRequest\x1a\x18.proto.GetVMInfoResponse\x128\n" +
 	"\aPauseVM\x12\x15.proto.PauseVMRequest\x1a\x16.proto.PauseVMResponse\x12;\n" +
-	"\bResumeVM\x12\x16.proto.ResumeVMRequest\x1a\x17.proto.ResumeVMResponseB\x1fZ\x1dv-architect/core_engine/protob\x06proto3"
+	"\bResumeVM\x12\x16.proto.ResumeVMRequest\x1a\x17.proto.ResumeVMResponseB#Z!v-architect/core_engine/proto/genb\x06proto3"
 
 var (
-	file_vm_proto_rawDescOnce sync.Once
-	file_vm_proto_rawDescData []byte
+	file_v_architect_core_proto_rawDescOnce sync.Once
+	file_v_architect_core_proto_rawDescData []byte
 )
 
-func file_vm_proto_rawDescGZIP() []byte {
-	file_vm_proto_rawDescOnce.Do(func() {
-		file_vm_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_vm_proto_rawDesc), len(file_vm_proto_rawDesc)))
+func file_v_architect_core_proto_rawDescGZIP() []byte {
+	file_v_architect_core_proto_rawDescOnce.Do(func() {
+		file_v_architect_core_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_v_architect_core_proto_rawDesc), len(file_v_architect_core_proto_rawDesc)))
 	})
-	return file_vm_proto_rawDescData
+	return file_v_architect_core_proto_rawDescData
 }
 
-var file_vm_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
-var file_vm_proto_goTypes = []any{
+var file_v_architect_core_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_v_architect_core_proto_goTypes = []any{
 	(*VMConfig)(nil),                  // 0: proto.VMConfig
 	(*GetHypervisorInfoRequest)(nil),  // 1: proto.GetHypervisorInfoRequest
 	(*GetHypervisorInfoResponse)(nil), // 2: proto.GetHypervisorInfoResponse
@@ -762,7 +762,7 @@ var file_vm_proto_goTypes = []any{
 	(*ResumeVMRequest)(nil),           // 11: proto.ResumeVMRequest
 	(*ResumeVMResponse)(nil),          // 12: proto.ResumeVMResponse
 }
-var file_vm_proto_depIdxs = []int32{
+var file_v_architect_core_proto_depIdxs = []int32{
 	0,  // 0: proto.StartVMRequest.config:type_name -> proto.VMConfig
 	0,  // 1: proto.GetVMInfoResponse.config:type_name -> proto.VMConfig
 	1,  // 2: proto.CoreHypervisorService.GetHypervisorInfo:input_type -> proto.GetHypervisorInfoRequest
@@ -784,26 +784,26 @@ var file_vm_proto_depIdxs = []int32{
 	0,  // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_vm_proto_init() }
-func file_vm_proto_init() {
-	if File_vm_proto != nil {
+func init() { file_v_architect_core_proto_init() }
+func file_v_architect_core_proto_init() {
+	if File_v_architect_core_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vm_proto_rawDesc), len(file_vm_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_v_architect_core_proto_rawDesc), len(file_v_architect_core_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
-		GoTypes:           file_vm_proto_goTypes,
-		DependencyIndexes: file_vm_proto_depIdxs,
-		MessageInfos:      file_vm_proto_msgTypes,
+		GoTypes:           file_v_architect_core_proto_goTypes,
+		DependencyIndexes: file_v_architect_core_proto_depIdxs,
+		MessageInfos:      file_v_architect_core_proto_msgTypes,
 	}.Build()
-	File_vm_proto = out.File
-	file_vm_proto_goTypes = nil
-	file_vm_proto_depIdxs = nil
+	File_v_architect_core_proto = out.File
+	file_v_architect_core_proto_goTypes = nil
+	file_v_architect_core_proto_depIdxs = nil
 }

@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: vm.proto
+// source: v_architect_core.proto
 
-package proto
+package gen
 
 import (
 	context "context"
@@ -123,7 +123,7 @@ var CoreHypervisorService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "vm.proto",
+	Metadata: "v_architect_core.proto",
 }
 
 const (
@@ -391,5 +391,5 @@ var VMService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "vm.proto",
+	Metadata: "v_architect_core.proto",
 }
