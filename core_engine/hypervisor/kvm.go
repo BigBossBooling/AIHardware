@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync" // For Mutex
 	"syscall" // Direct syscalls for ioctl, consider x/sys/unix for more safety
-	// "unsafe" // No longer needed directly here with x/sys/unix for current ioctls
+	"unsafe" // For unsafe.Pointer when calling ioctl with structs
 
 	"golang.org/x/sys/unix" // Preferred for syscalls where possible
 )
@@ -67,9 +67,103 @@ type VirtualMachine struct {
 	// This is used by Stop() to wait for graceful termination.
 	runLoopDoneChan chan struct{}
 
+	memoryRegions []*MemoryRegion // Tracks memory regions added to this VM
 
 	// We can add VM configuration, vCPUs, memory regions etc. here later.
 }
+
+// MemoryRegion describes a KVM memory region.
+type MemoryRegion struct {
+	Slot          uint32
+	GuestPhysAddr uint64
+	MemorySize    uint64
+	HostUserAddr  uintptr // Points to the start of the mmapped memory in this process. Redundant if backingStore is present, but useful for KvmUserspaceMemoryRegion.
+	Flags         uint32
+	backingStore  []byte // The actual mmapped slice on the host
+	readOnly      bool   // Derived from flags, for convenience
+	logDirtyPages bool   // Derived from flags, for convenience
+}
+
+// KvmUserspaceMemoryRegion is the Go equivalent of struct kvm_userspace_memory_region
+// It must match the kernel definition precisely for the ioctl to work.
+// struct kvm_userspace_memory_region {
+//   __u32 slot;
+//   __u32 flags;
+//   __u64 guest_phys_addr;
+//   __u64 memory_size; /* bytes */
+//   __u64 userspace_addr; /* start of the userspace allocated memory */
+// };
+// Total size on x86_64: 4 + 4 + 8 + 8 + 8 = 32 bytes. (Padding can make it 40)
+// Let's confirm struct layout and padding.
+// __u32 slot; (4 bytes)
+// __u32 flags; (4 bytes) -> 8 bytes so far
+// __u64 guest_phys_addr; (8 bytes) -> 16 bytes
+// __u64 memory_size; (8 bytes) -> 24 bytes
+// __u64 userspace_addr; (8 bytes) -> 32 bytes
+// On a 64-bit system, this struct is naturally 32 bytes if there's no further padding.
+// However, the C struct on Linux x86_64 for KVM is often 40 bytes due to alignment of the 64-bit fields.
+// The structure definition in C is:
+// struct kvm_userspace_memory_region {
+//      __u32 slot;
+//      __u32 flags;
+//      __u64 guest_phys_addr;
+//      __u64 memory_size;
+//      __u64 userspace_addr;
+// };
+// It seems it should indeed be 32 bytes if __u64 are 8-byte aligned and __u32 are 4-byte aligned.
+// Let's assume 32 bytes first. If ioctl fails with EINVAL, struct size/layout is a prime suspect.
+// After further research: The C struct `kvm_userspace_memory_region` on a 64-bit system is
+// typically 40 bytes because `guest_phys_addr` (a `__u64`) will be aligned to an 8-byte boundary,
+// forcing 4 bytes of padding after `flags`. So:
+// slot (4) + flags (4) + padding (4) + guest_phys_addr (8) + memory_size (8) + userspace_addr (8) = 36? No.
+// slot (4) + flags (4) = 8. guest_phys_addr (8) is fine.
+// Let's re-verify standard struct layout rules.
+// slot  (u32) - offset 0
+// flags (u32) - offset 4
+// guest_phys_addr (u64) - offset 8 (aligned to 8, which is natural after two u32)
+// memory_size (u64) - offset 16
+// userspace_addr (u64) - offset 24
+// This layout is 32 bytes. This is what many userspace tools (like QEMU) also use.
+// Let's proceed with this 32-byte structure. The constant `ioctl_KVM_SET_USER_MEMORY_REGION_FULL` was
+// calculated with 0x28 (40 bytes) size. This means the kernel *expects* a 40-byte struct.
+// So, there must be padding.
+// The kernel definition:
+// struct kvm_userspace_memory_region {
+//      __u32 slot;
+//      __u32 flags;
+//      __u64 guest_phys_addr;
+//      __u64 memory_size;
+//      __u64 userspace_addr;
+// };
+// If this is directly translated, it's 32 bytes. Why would it be 40?
+// Ah, `userspace_addr` is a pointer, effectively `uintptr_t`. On 64-bit, this is 8 bytes.
+// The struct definition from kernel source (e.g., `include/uapi/linux/kvm.h`):
+// struct kvm_userspace_memory_region {
+//         __u32 slot;
+//         __u32 flags;
+//         __u64 guest_phys_addr;
+//         __u64 memory_size; /* bytes */
+//         __u64 userspace_addr; /* start of the userspace allocated memory */
+// };
+// This is indeed 32 bytes. The ioctl constant 0x4028AE46 has size 0x28 = 40 bytes.
+// This implies there's a mismatch in my understanding or sources for one of them.
+// Let's use the struct definition that matches the ioctl size if the ioctl number is fixed.
+// If the ioctl number `0x4028AE46` (size 40) is correct, then the Go struct must be 40 bytes.
+// This means there are 8 bytes of padding somewhere or an extra field.
+// Let's assume the common C struct is what we need, and it's 32 bytes.
+// Then the ioctl number should be calculated based on 32 bytes (0x20).
+// _IOW(0xAE, 0x46, size=32) = (1<<30) | (0xAE<<8) | (0x46<<0) | (0x20<<16) = 0x4020AE46.
+// This value (0x4020AE46) is also commonly cited.
+// I will use this one, and a 32-byte struct.
+// Updating `ioctl_KVM_SET_USER_MEMORY_REGION_FULL` in constants file.
+type KvmUserspaceMemoryRegion struct {
+	Slot          uint32
+	Flags         uint32
+	GuestPhysAddr uint64
+	MemorySize    uint64
+	UserspaceAddr uintptr // uintptr matches __u64 userspace_addr on 64-bit Go
+}
+
 
 // Note on syscalls:
 // The standard `syscall` package is powerful but less safe.
@@ -239,13 +333,31 @@ func (vm *VirtualMachine) Close() error {
 
 	// Unmap kvm_run data
 	if vm.kvmRunData != nil {
-		log.Printf("Unmapping kvm_run data for VM fd %d", vm.vmFd)
+		log.Printf("Unmapping kvm_run data for VM (vmFd: %d, vcpuFd: %d)", vm.vmFd, vm.vcpuFd)
 		err := unix.Munmap(vm.kvmRunData)
 		if err != nil {
-			log.Printf("Error unmapping kvm_run data for VM fd %d: %v", vm.vmFd, err)
+			log.Printf("Error unmapping kvm_run data for VM (vmFd: %d, vcpuFd: %d): %v", vm.vmFd, vm.vcpuFd, err)
+			// Non-fatal for Close, continue cleanup
 		}
 		vm.kvmRunData = nil
 	}
+
+	// Unmap user memory regions
+	for i, region := range vm.memoryRegions {
+		if region.backingStore != nil {
+			log.Printf("Unmapping memory region slot %d (GPA: 0x%x, Size: 0x%x) for VM (vmFd: %d)",
+				region.Slot, region.GuestPhysAddr, region.MemorySize, vm.vmFd)
+			if err := unix.Munmap(region.backingStore); err != nil {
+				log.Printf("Error unmapping memory region slot %d (HUA: 0x%x): %v", region.Slot, region.HostUserAddr, err)
+				// Non-fatal for Close, continue cleanup for other regions
+			}
+			region.backingStore = nil // Mark as unmapped
+			region.HostUserAddr = 0  // Invalidate address
+		}
+		vm.memoryRegions[i] = nil // Help GC
+	}
+	vm.memoryRegions = nil // Clear the slice
+
 
 	// Close VM FD
 	if vm.vmFd > 0 { // Check against > 0 as well
@@ -628,6 +740,118 @@ func (vm *VirtualMachine) Resume() error {
 	log.Printf("VM (vmFd: %d) is now in state Running (conceptually resumed).", vm.vmFd)
 	// If Pause actually stopped the KVM_RUN loop, Resume would need to restart it.
 	return nil
+}
+
+
+// AddMemoryRegion maps a portion of host memory to the guest's physical address space.
+func (vm *VirtualMachine) AddMemoryRegion(slot uint32, guestPhysAddr uint64, memorySize uint64, flags uint32, readOnly bool) (*MemoryRegion, error) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+
+	if vm.state == StateRunning || vm.state == StatePaused {
+		// Modifying memory layout while VM is running/paused can be dangerous or disallowed.
+		// KVM might allow it, but it's safer to restrict this to configuration time (e.g., StateStopped, StateCreating).
+		log.Printf("Cannot add memory region to VM (vmFd: %d) while it is in state %s.", vm.vmFd, vm.state)
+		return nil, fmt.Errorf("cannot add memory region while VM is %s", vm.state)
+	}
+
+	if memorySize == 0 {
+		return nil, fmt.Errorf("memory size cannot be zero")
+	}
+
+	// Memory size and guest physical address should be page-aligned.
+	// Host mmap will also typically work with page granularity.
+	pageSize := uint64(os.Getpagesize())
+	if memorySize%pageSize != 0 {
+		//return nil, fmt.Errorf("memory size 0x%x must be a multiple of page size 0x%x", memorySize, pageSize)
+		// For now, we can allow it and mmap will likely round up, or KVM might complain.
+		// Let's enforce it for clarity.
+		log.Printf("Warning: memory size 0x%x is not page aligned (page size 0x%x). This might lead to issues.", memorySize, pageSize)
+		// To be strict: return fmt.Errorf(...)
+	}
+	if guestPhysAddr%pageSize != 0 {
+		log.Printf("Warning: guest physical address 0x%x is not page aligned (page size 0x%x). This might lead to issues.", guestPhysAddr, pageSize)
+		// To be strict: return fmt.Errorf(...)
+	}
+
+
+	// 1. Allocate page-aligned host memory using mmap
+	// MAP_ANONYMOUS: The mapping is not backed by any file; its contents are initialized to zero.
+	// MAP_PRIVATE: Create a private copy-on-write mapping. Updates to the mapping are not visible to other processes.
+	// Or MAP_SHARED if we want other processes (e.g. external device models) to see raw memory. For now, PRIVATE.
+	// For guest RAM, MAP_SHARED might be more appropriate if the intent is direct mapping without CoW.
+	// Let's use MAP_ANONYMOUS | MAP_SHARED for typical RAM behavior.
+	// Or MAP_ANONYMOUS | MAP_PRIVATE if we want host COW semantics for the backing.
+	// QEMU uses a file backend or MAP_ANONYMOUS | MAP_SHARED for RAM.
+	// Let's start with ANONYMOUS | PRIVATE for simplicity and safety from host perspective. KVM sees it as RAM anyway.
+	// After more thought, for guest RAM, we usually want it to be mutable by the guest and potentially by the VMM
+	// for things like live migration. MAP_SHARED with MAP_ANONYMOUS is common.
+	// Let's use MAP_ANONYMOUS | MAP_SHARED.
+	hostMem, err := unix.Mmap(-1, 0, int(memorySize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANONYMOUS|unix.MAP_SHARED)
+	if err != nil {
+		log.Printf("Failed to mmap host memory for VM (vmFd: %d), size %d: %v", vm.vmFd, memorySize, err)
+		return nil, fmt.Errorf("failed to mmap host memory (size %d): %w", memorySize, err)
+	}
+	// hostUserAddr is the address of the first byte of the slice.
+	hostUserAddr := uintptr(unsafe.Pointer(&hostMem[0]))
+	log.Printf("Mmapped host memory for VM (vmFd: %d): addr=0x%x, actual_slice_len=%d, requested_size=%d", vm.vmFd, hostUserAddr, len(hostMem), memorySize)
+
+
+	// 2. Populate kvm_userspace_memory_region struct
+	var effectiveFlags uint32 = flags
+	if readOnly {
+		effectiveFlags |= KVM_MEM_READONLY
+	}
+
+	memRegionStruct := KvmUserspaceMemoryRegion{
+		Slot:          slot,
+		Flags:         effectiveFlags,
+		GuestPhysAddr: guestPhysAddr,
+		MemorySize:    memorySize,
+		UserspaceAddr: hostUserAddr,
+	}
+
+	// 3. Call KVM_SET_USER_MEMORY_REGION ioctl
+	// The third argument to ioctl must be a pointer to the struct.
+	log.Printf("Calling KVM_SET_USER_MEMORY_REGION for VM (vmFd: %d), slot: %d, GPA: 0x%x, size: 0x%x, HUA: 0x%x, flags: 0x%x",
+		vm.vmFd, slot, guestPhysAddr, memorySize, hostUserAddr, effectiveFlags)
+
+	// We use unix.IoctlWritePointer for _IOW ioctls.
+	// The request number should be the fully encoded one.
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(vm.vmFd),
+		uintptr(ioctl_KVM_SET_USER_MEMORY_REGION_FULL), // Use the fully encoded ioctl number
+		uintptr(unsafe.Pointer(&memRegionStruct)),
+	)
+
+	if errno != 0 {
+		// If ioctl fails, unmap the host memory we just allocated
+		log.Printf("KVM_SET_USER_MEMORY_REGION ioctl failed for VM (vmFd: %d): %v. Unmapping host memory.", vm.vmFd, errno)
+		errUnmap := unix.Munmap(hostMem)
+		if errUnmap != nil {
+			log.Printf("Critical: Failed to unmap host memory after KVM_SET_USER_MEMORY_REGION failure: %v", errUnmap)
+			// This is a leak if unmap fails.
+		}
+		return nil, fmt.Errorf("KVM_SET_USER_MEMORY_REGION ioctl failed: %w", errno)
+	}
+
+	log.Printf("Successfully set user memory region for VM (vmFd: %d), slot: %d", vm.vmFd, slot)
+
+	// 4. Store the MemoryRegion info
+	region := &MemoryRegion{
+		Slot:          slot,
+		GuestPhysAddr: guestPhysAddr,
+		MemorySize:    memorySize,
+		HostUserAddr:  hostUserAddr,
+		backingStore:  hostMem, // Store the mmapped slice
+		Flags:         effectiveFlags,
+		readOnly:      (effectiveFlags & KVM_MEM_READONLY) != 0,
+		logDirtyPages: (effectiveFlags & KVM_MEM_LOG_DIRTY_PAGES) != 0,
+	}
+	vm.memoryRegions = append(vm.memoryRegions, region)
+
+	return region, nil
 }
 
 

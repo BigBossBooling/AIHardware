@@ -39,6 +39,82 @@ const (
 // KVMIO is 0xAE.
 // Example: KVM_GET_API_VERSION is _IO(KVMIO, 0x00)
 // So, (0xAE << 8) | 0x00 = 0xAE00
+
+// --- KVM System ioctls (on /dev/kvm fd) ---
+// (KVM_GET_API_VERSION, KVM_CREATE_VM already here)
+
+// --- VM ioctls (on VM fd) ---
+// (KVM_CREATE_VCPU already here)
+
+// ioctl_KVM_SET_USER_MEMORY_REGION is used to create, modify, or delete a guest physical memory region.
+// Takes a pointer to struct kvm_userspace_memory_region.
+// #define KVM_SET_USER_MEMORY_REGION _IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)
+// Note: _IOW means data is written from userspace to kernel.
+// Size of struct kvm_userspace_memory_region is part of the ioctl number encoding for _IOW/_IOR.
+// However, for Go's x/sys/unix, we pass the correctly sized structure as the third argument,
+// and the ioctl number constant doesn't usually encode the size directly in its value if defined simply.
+// Let's verify the actual value from headers or reliable source.
+// From /usr/include/linux/kvm.h: #define KVM_SET_USER_MEMORY_REGION      _IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)
+// KVMIO = 0xAE. For _IOW, it's ((WRITE) << _IOC_DIRSHIFT) | ((TYPE) << _IOC_TYPESHIFT) | ((NR) << _IOC_NRSHIFT) | ((SIZE) << _IOC_SIZESHIFT)
+// WRITE = 1. The actual calculation is complex. Often these are defined as hex constants.
+// A common value found for KVM_SET_USER_MEMORY_REGION is 0x4020AE46 for a 32-byte struct (common on 64-bit).
+// Let's use the simpler base number if x/sys/unix handles the _IOW nature correctly by pointer type.
+// If not, specific uintptr conversion with unsafe.Pointer will be needed.
+// For now, using the base number and relying on x/sys/unix.Ioctl uintptr arg.
+const ioctl_KVM_SET_USER_MEMORY_REGION = 0xAE46 // Placeholder, may need adjustment based on _IOW encoding if not using raw syscalls with correctly calculated value.
+                                              // More robust: Calculate or find the fully encoded value.
+                                              // Let's use a more common value found in other projects if direct calculation is tricky:
+                                              // Example: 0x4020AE46 (assuming 32-byte struct kvm_userspace_memory_region)
+                                              // For x/sys/unix, often the unadorned number (like _IO) is used and the pointer type handles direction.
+                                              // Let's try with the direct _IO style number first and see if unix.Ioctl... works.
+                                              // No, _IOW is not like _IO. The number must be correct.
+                                              // The struct size is sizeof(struct kvm_userspace_memory_region) which is 40 bytes on 64-bit.
+                                              // Let's use the value that corresponds to that.
+                                              // #define KVM_SET_USER_MEMORY_REGION      _IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)
+                                              // For a struct of 40 bytes (5 * uint64_t):
+                                              // IOC_WRITE = 1U
+                                              // From Go's perspective, we'll use unix.IoctlPtr সভাবে.
+                                              // The constant itself should be the "request" part, which is usually TYPE << 8 | NR
+                                              // So, 0xAE46 is likely correct for the 'request' part, and IoctlPtr handles direction.
+                                              // Let's stick with the direct interpretation first: KVMIO (0xAE) << 8 | 0x46
+                                              // This seems to be the case for many other KVM ioctls in x/sys/unix.
+                                              // Rechecking: KVM_SET_USER_MEMORY_REGION is indeed complex.
+                                              // A common definition is `_IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)`.
+                                              // The actual value for x86_64 (where kvm_userspace_memory_region is 40 bytes) is often 0x4028AE46.
+                                              // Let's define it as such if we were to use raw syscalls.
+                                              // For unix.IoctlWritePtr, the `req` should be this full value.
+const KVM_NR_SET_USER_MEMORY_REGION = 0x46
+// Let's use the fully encoded value for clarity if available, or construct if necessary.
+// For now, assuming unix.IoctlWritePointer will work with a simpler req + typed pointer.
+// This might be a point of failure / refinement.
+// Let's assume for now we will use unix.IoctlWritePointer with the base request number.
+// However, most sources indicate the fully encoded number is needed.
+// For x86_64, struct kvm_userspace_memory_region is 40 bytes.
+// #define _IOC_WRITE          1U
+// #define _IOC_TYPEBITS       8
+// #define _IOC_NRBITS         8
+// #define _IOC_SIZEBITS       14
+// #define _IOC_NRSHIFT        0
+// #define _IOC_TYPESHIFT      (_IOC_NRSHIFT + _IOC_NRBITS)
+// #define _IOC_SIZESHIFT      (_IOC_TYPESHIFT + _IOC_TYPEBITS)
+// #define _IOC_DIRSHIFT       (_IOC_SIZESHIFT + _IOC_SIZEBITS)
+// #define _IOW(type,nr,size)  ((_IOC_WRITE<<_IOC_DIRSHIFT)|((type)<<_IOC_TYPESHIFT)|((nr)<<_IOC_NRSHIFT)|((__IOC_ тело_SIZEOF(size))<<_IOC_SIZESHIFT))
+// Where __IOC_ тело_SIZEOF(size) is effectively sizeof(struct kvm_userspace_memory_region)
+// If struct is 32 bytes (0x20):
+// _IOW(0xAE, 0x46, size=32) = (1<<30) | (0xAE<<8) | (0x46<<0) | (0x20<<16)
+// = 0x40000000 | 0x0000AE00 | 0x00000046 | 0x00200000 = 0x4020AE46
+const ioctl_KVM_SET_USER_MEMORY_REGION_FULL = 0x4020AE46 // Corrected for 32-byte struct
+
+
+// Flags for kvm_userspace_memory_region.flags
+const (
+	KVM_MEM_LOG_DIRTY_PAGES uint32 = 1 << 0
+	KVM_MEM_READONLY        uint32 = 1 << 1
+)
+
+
+// --- VCPU ioctls (on VCPU fd) ---
+// (KVM_GET_VCPU_MMAP_SIZE, KVM_RUN already here)
 //
 // Example: KVM_CREATE_VM is _IO(KVMIO, 0x01)
 // So, (0xAE << 8) | 0x01 = 0xAE01

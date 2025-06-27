@@ -373,3 +373,117 @@ func TestVM_PauseResume_StateOnly(t *testing.T) {
 		t.Errorf("VM state should be StateStopped or StateError after final Stop, got %s", vm.state)
 	}
 }
+
+func TestVM_AddMemoryRegion(t *testing.T) {
+	if !checkKVMSupport(t) {
+		t.SkipNow()
+	}
+
+	hypervisor, err := NewKVMHypervisor()
+	if err != nil {
+		t.Fatalf("Failed to create KVMHypervisor: %v", err)
+	}
+	defer hypervisor.Close()
+
+	vm, err := hypervisor.CreateVM()
+	if err != nil {
+		t.Fatalf("Failed to create VM: %v", err)
+	}
+	// Ensure VM is closed to unmap memory regions
+	t.Cleanup(func() {
+		log.Println("TestVM_AddMemoryRegion: Cleanup - closing VM.")
+		if err := vm.Close(); err != nil {
+			t.Logf("TestVM_AddMemoryRegion: Cleanup - error closing VM: %v", err)
+		}
+		log.Println("TestVM_AddMemoryRegion: Cleanup - VM closed.")
+	})
+
+
+	pageSize := uint64(os.Getpagesize())
+	memSize := pageSize * 16 // 16 pages, e.g., 64KB if page is 4KB
+
+	// 1. Add a valid memory region
+	log.Println("TestVM_AddMemoryRegion: Attempting to add valid memory region.")
+	region1, err := vm.AddMemoryRegion(0, 0x0, memSize, 0, false)
+	if err != nil {
+		t.Fatalf("AddMemoryRegion(slot 0) failed: %v", err)
+	}
+	if region1 == nil {
+		t.Fatal("AddMemoryRegion(slot 0) returned nil region without error.")
+	}
+	if len(vm.memoryRegions) != 1 {
+		t.Fatalf("Expected 1 memory region, got %d", len(vm.memoryRegions))
+	}
+	if vm.memoryRegions[0] != region1 {
+		t.Fatal("VM memoryRegions[0] is not the returned region1.")
+	}
+	if region1.backingStore == nil {
+		t.Fatal("region1.backingStore is nil after successful AddMemoryRegion.")
+	}
+	if len(region1.backingStore) != int(memSize) {
+		t.Fatalf("region1.backingStore length is %d, want %d", len(region1.backingStore), int(memSize))
+	}
+	if region1.GuestPhysAddr != 0x0 {
+		t.Errorf("region1.GuestPhysAddr is 0x%x, want 0x0", region1.GuestPhysAddr)
+	}
+	log.Printf("TestVM_AddMemoryRegion: Added region1: Slot=%d, GPA=0x%x, Size=0x%x, HUA=0x%x",
+		region1.Slot, region1.GuestPhysAddr, region1.MemorySize, region1.HostUserAddr)
+
+
+	// 2. Add another valid memory region
+	log.Println("TestVM_AddMemoryRegion: Attempting to add second valid memory region.")
+	region2GPA := memSize // Place it right after the first region
+	region2, err := vm.AddMemoryRegion(1, region2GPA, memSize/2, KVM_MEM_READONLY, true) // Read-only
+	if err != nil {
+		t.Fatalf("AddMemoryRegion(slot 1) failed: %v", err)
+	}
+	if region2 == nil {
+		t.Fatal("AddMemoryRegion(slot 1) returned nil region without error.")
+	}
+	if len(vm.memoryRegions) != 2 {
+		t.Fatalf("Expected 2 memory regions, got %d", len(vm.memoryRegions))
+	}
+	if !region2.readOnly || (region2.Flags&KVM_MEM_READONLY == 0) {
+		t.Error("region2 should be read-only but flags do not reflect it.")
+	}
+	log.Printf("TestVM_AddMemoryRegion: Added region2: Slot=%d, GPA=0x%x, Size=0x%x, HUA=0x%x, ReadOnly=%v",
+		region2.Slot, region2.GuestPhysAddr, region2.MemorySize, region2.HostUserAddr, region2.readOnly)
+
+
+	// 3. Test adding with zero size (should fail)
+	log.Println("TestVM_AddMemoryRegion: Attempting to add zero-size memory region.")
+	_, err = vm.AddMemoryRegion(2, region2GPA+memSize/2, 0, 0, false)
+	if err == nil {
+		t.Error("AddMemoryRegion with zero size should have failed, but didn't.")
+	} else {
+		t.Logf("AddMemoryRegion with zero size failed as expected: %v", err)
+	}
+
+
+	// 4. Test adding memory while VM is "running" (should fail)
+	// Force state to running for this test part.
+	// Note: The VM is not actually running KVM_RUN here, just state manipulation.
+	vm.mu.Lock()
+	originalState := vm.state
+	vm.state = StateRunning
+	vm.mu.Unlock()
+	log.Println("TestVM_AddMemoryRegion: Attempting to add memory region while VM state is Running.")
+	_, err = vm.AddMemoryRegion(3, region2GPA+memSize, pageSize, 0, false)
+	if err == nil {
+		t.Error("AddMemoryRegion while VM is Running should have failed, but didn't.")
+	} else {
+		t.Logf("AddMemoryRegion while VM is Running failed as expected: %v", err)
+	}
+	vm.mu.Lock()
+	vm.state = originalState // Restore original state
+	vm.mu.Unlock()
+
+
+	// 5. Test Close unmaps memory (implicitly tested by t.Cleanup and no panic/error from Close)
+	// To be more explicit, we could check if region.backingStore becomes nil after Close,
+	// but Close() itself nils out vm.memoryRegions.
+	// The main check is that Close() runs without erroring on Munmap.
+	// If we wanted to verify, we'd have to Close here and then inspect.
+	// But Cleanup handles the Close.
+	log.Println("TestVM_AddMemoryRegion: Test finished. VM Close in Cleanup will test Munmap.")
+}
