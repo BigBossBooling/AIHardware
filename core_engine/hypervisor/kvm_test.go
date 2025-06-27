@@ -170,7 +170,7 @@ func TestVM_StartStop(t *testing.T) {
 
 	// Start the VM
 	log.Println("TestVM_StartStop: Attempting to start VM.")
-	err = vm.Start()
+	err = vm.Start(1) // Start with 1 VCPU
 	if err != nil {
 		// If KVM_RUN fails immediately (e.g. no memory, no registers set), this is expected for now.
 		// Our current runLoop exits on the first KVM_RUN success because no guest code is running to HLT/Shutdown.
@@ -242,7 +242,7 @@ func TestVM_StartStop(t *testing.T) {
 	// If it was Error, it can't be started. If Stopped, it can.
 	if finalState == StateStopped {
 		log.Println("TestVM_StartStop: Attempting to start VM again after stop.")
-		err = vm.Start()
+		err = vm.Start(1) // Start with 1 VCPU again
 		if err != nil {
 			t.Errorf("vm.Start() again failed: %v", err)
 		}
@@ -251,11 +251,11 @@ func TestVM_StartStop(t *testing.T) {
 		if err != nil {
 			t.Errorf("vm.Stop() again failed: %v", err)
 		}
-		vm.mu.Lock()
-		if vm.state != StateStopped && vm.state != StateError {
-			t.Errorf("VM state after second Stop() should be StateStopped or StateError, got %s", vm.state)
+		// State check after stop
+		currentStateAfterSecondStop := vm.GetState()
+		if currentStateAfterSecondStop != StateStopped && currentStateAfterSecondStop != StateError {
+			t.Errorf("VM state after second Stop() should be StateStopped or StateError, got %s", currentStateAfterSecondStop)
 		}
-		vm.mu.Unlock()
 	} else {
 		log.Printf("TestVM_StartStop: VM was in state %s, not attempting second start.", finalState)
 	}
@@ -298,7 +298,7 @@ func TestVM_PauseResume_StateOnly(t *testing.T) {
 	}
 
 	// Start the VM
-	err = vm.Start()
+	err = vm.Start(1) // Start with 1 VCPU
 	if err != nil {
 		// As in TestVM_StartStop, runLoop will exit quickly.
 		// This test focuses on Pause/Resume state changes assuming Start "worked" enough to change state.
