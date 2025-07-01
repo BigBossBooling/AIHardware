@@ -126,7 +126,8 @@ func (vcpu *VCpu) Run(
 	pit *devices.PITDevice,
 	rtc *devices.RTCDevice,
 	pic *devices.PICController,
-	ata *devices.ATADevice, // Added ATA device
+	ata *devices.ATADevice,
+	ne2000 *devices.NE2000Device, // Added NE2000 device
 ) error {
 	fmt.Println("VCPU run loop starting...")
 	for {
@@ -226,6 +227,14 @@ func (vcpu *VCpu) Run(
 					val, err = ata.HandleIO(port, dataSlice, isWrite)
 					if err != nil {
 						fmt.Printf("ATA I/O Error on port 0x%x: %v\n", port, err)
+					}
+				}
+			// Check NE2000 device ports (e.g., 0x300-0x31F)
+			} else if (port >= devices.NE2000_IO_BASE && port < devices.NE2000_IO_BASE+32) { // NE2000 uses 32 ports
+				if ne2000 != nil {
+					val, err = ne2000.HandleIO(port, dataSlice, isWrite)
+					if err != nil {
+						fmt.Printf("NE2000 I/O Error on port 0x%x: %v\n", port, err)
 					}
 				}
 			} else {

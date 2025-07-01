@@ -11,6 +11,7 @@ import (
 	// Import hypervisor and devices packages once they are created
 	"v-architect/core_engine/hypervisor"
 	"v-architect/core_engine/devices"
+	"v-architect/core_engine/network" // For TapDevice
 )
 
 // VirtualMachine represents a single virtual machine instance.
@@ -26,6 +27,8 @@ type VirtualMachine struct {
 	rtcDevice  *devices.RTCDevice        // Real-Time Clock
 	pic        *devices.PICController    // Programmable Interrupt Controller
 	ataDevice  *devices.ATADevice        // Primary ATA Controller
+	ne2000     *devices.NE2000Device     // NE2000 Network Interface Card
+	tapDevice  *network.TapDevice      // TAP device for NE2000 (owned by VM for cleanup)
 	// Add other devices here as they are implemented
 }
 
@@ -103,10 +106,25 @@ func CreateVM(memorySize uint64, bootloader []byte) (*VirtualMachine, error) {
 		return nil, fmt.Errorf("failed to create ATA device: %w", err)
 	}
 
+	// Initialize TAP device and NE2000 NIC
+	tapDev, err := network.NewTapDevice("tap-varch%d") // Kernel will pick a number
+	if err != nil {
+		// Consider if VM creation should fail or proceed without network
+		return nil, fmt.Errorf("failed to create TAP device: %w", err)
+	}
+	// MAC address for the virtual NIC
+	macAddress := "DE:AD:BE:EF:00:01" // Example MAC
+	ne2000Dev, err := devices.NewNE2000Device(devices.NE2000_IO_BASE, tapDev, macAddress, pic, devices.IRQ_NE2000)
+	if err != nil {
+		tapDev.Close() // Clean up TAP device if NE2000 init fails
+		return nil, fmt.Errorf("failed to create NE2000 device: %w", err)
+	}
+
 
 	// Create and initialize the VCPU
 	vcpu, err := NewVCpu(vmFD, guestMem) // Pass guestMem for VCPU to access it
 	if err != nil {
+		tapDev.Close() // Clean up TAP device
 		return nil, fmt.Errorf("failed to create VCPU: %w", err)
 	}
 
@@ -120,6 +138,8 @@ func CreateVM(memorySize uint64, bootloader []byte) (*VirtualMachine, error) {
 		rtcDevice:  rtcDevice,
 		pic:        pic,
 		ataDevice:  ataDevice,
+		ne2000:     ne2000Dev,
+		tapDevice:  tapDev,
 	}
 
 	// Configure VCPU registers (simplified for example)
@@ -136,7 +156,7 @@ func (vm *VirtualMachine) Run() error {
 	fmt.Println("VM starting...")
 	// Pass all relevant devices to the VCPU's run loop.
 	// The VCPU will need to query the PIC for pending interrupts.
-	return vm.vcpu.Run(vm.serialPort, vm.pitDevice, vm.rtcDevice, vm.pic, vm.ataDevice)
+	return vm.vcpu.Run(vm.serialPort, vm.pitDevice, vm.rtcDevice, vm.pic, vm.ataDevice, vm.ne2000)
 }
 
 // Stop cleans up the virtual machine resources.
@@ -145,10 +165,18 @@ func (vm *VirtualMachine) Stop() {
 		vm.vcpu.Stop()
 	}
 	if vm.memFD != 0 {
-		syscall.Close(vm.memFD)
+		syscall.Close(vm.memFD) // Consider using unix.Close for consistency if syscall.Close causes issues on some Go versions for memfd.
 	}
 	if vm.vmFD != 0 {
 		syscall.Close(vm.vmFD)
+	}
+	if vm.tapDevice != nil {
+		// log.Printf("Closing TAP device: %s", vm.tapDevice.IfName()) // Requires log import
+		fmt.Printf("Closing TAP device: %s\n", vm.tapDevice.IfName())
+		if err := vm.tapDevice.Close(); err != nil {
+			// log.Printf("Error closing TAP device %s: %v", vm.tapDevice.IfName(), err)
+			fmt.Printf("Error closing TAP device %s: %v\n", vm.tapDevice.IfName(), err)
+		}
 	}
 	fmt.Println("VM stopped.")
 }
