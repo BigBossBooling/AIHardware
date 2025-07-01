@@ -48,9 +48,8 @@ type ATADevice struct {
 	devControlReg  byte   // Write: Device Control Register (0x3F6)
 
 	// Data buffer for PIO transfers (typically one sector, 512 bytes for ATA_SECTOR_SIZE)
-	// Data is read/written word by word (16-bit) through the Data Register (0x1F0).
-	dataBuffer    []uint16 // Stores words, ready for CPU to read/write
-	dataBufferPtr int      // Current position in dataBuffer for R/W operations
+	dataBuffer    []byte // Stores bytes for one sector
+	dataBufferPtr int    // Current byte position in dataBuffer for R/W operations
 
 	// Drive information (only one master drive supported for now)
 	masterDrive   ATADrive
@@ -98,6 +97,7 @@ func NewATADevice(image VirtualDiskImage, irqRaiser InterruptRaiser, irqNum uint
 		driveHeadReg: ATA_DH_FIXED_BITS | ATA_DH_DRV_MASTER, // Master selected, LBA mode off by default.
 		devControlReg: ATA_DCR_NIEN, // Interrupts disabled by default via nIEN=1
 		nIEN: true,
+		dataBuffer: make([]byte, ATA_SECTOR_SIZE), // Initialize data buffer
 	}
 
 	dev.generateIdentifyData()
@@ -168,6 +168,26 @@ func (dev *ATADevice) generateIdentifyData() {
 	// TODO: Populate more fields for better compatibility (CHS geometry, LBA48 size if applicable, etc.)
 }
 
+// getCurrentLBA constructs the LBA address from the registers.
+// Assumes LBA28 mode if dev.isLBA is true.
+func (dev *ATADevice) getCurrentLBA() uint64 {
+	if !dev.isLBA {
+		// CHS to LBA conversion would go here if CHS were supported.
+		// For now, if not LBA mode, this is problematic or implies very old access.
+		log.Printf("ATA: getCurrentLBA called in CHS mode (treating LBA registers as LBA).")
+	}
+	// LBA28:
+	// LBA bits 0-7:   lbaLowReg
+	// LBA bits 8-15:  lbaMidReg
+	// LBA bits 16-23: lbaHighReg
+	// LBA bits 24-27: driveHeadReg (lower 4 bits: D3 D2 D1 D0 of the 0x0F mask)
+	lba := uint64(dev.lbaLowReg) |
+		(uint64(dev.lbaMidReg) << 8) |
+		(uint64(dev.lbaHighReg) << 16) |
+		(uint64(dev.driveHeadReg&0x0F) << 24)
+	return lba
+}
+
 
 // HandleIO processes PIO reads and writes to the ATA controller's registers.
 func (dev *ATADevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, error) {
@@ -186,30 +206,76 @@ func (dev *ATADevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, e
 		switch regOffset {
 		case ATA_REG_DATA: // 0x1F0
 			if isWrite {
-				// Write to data buffer (handle 16-bit PIO)
-				if len(data) < 2 {
-					return 0, fmt.Errorf("ata: data write to 0x%X requires 2 bytes, got %d", port, len(data))
-				}
-				if dev.dataBufferPtr >= len(dev.dataBuffer) {
-					dev.statusReg |= ATA_SR_ERR // Should not happen if DRQ logic is correct
-					return 0, fmt.Errorf("ata: data write buffer overflow (ptr %d, len %d)", dev.dataBufferPtr, len(dev.dataBuffer))
-				}
-				word := uint16(data[0]) | (uint16(data[1]) << 8)
-				dev.dataBuffer[dev.dataBufferPtr] = word
-				dev.dataBufferPtr++
-
-				// Compare total bytes written from buffer vs total bytes for command
-				if uint64(dev.dataBufferPtr*2) >= uint64(dev.sectorsToTransfer)*uint64(ATA_SECTOR_SIZE) {
-					// All data written for current command
-					dev.statusReg &= (^ (ATA_SR_BSY | ATA_SR_DRQ) & 0xFF)
-					dev.statusReg |= ATA_SR_DRDY
-					// Potentially signal interrupt here if command complete
-					log.Printf("ATA: Finished writing data for command 0x%02X", dev.currentCommand)
+				// Accumulate bytes from guest into dev.dataBuffer
+				// data is []byte from guest OUT instruction (KVM_EXIT_IO.size will be 1 or 2 typically)
+				if dev.dataBufferPtr+len(data) > ATA_SECTOR_SIZE {
+					dev.statusReg |= ATA_SR_ERR
+					log.Printf("ATA: Write to Data Port would overflow sector buffer. Ptr: %d, Len: %d", dev.dataBufferPtr, len(data))
+					return 0, fmt.Errorf("ata: data write buffer overflow")
 				}
 
+				for i := 0; i < len(data); i++ {
+					dev.dataBuffer[dev.dataBufferPtr+i] = data[i]
+				}
+				dev.dataBufferPtr += len(data)
+
+				// log.Printf("ATA: Wrote %d bytes to data port. dataBufferPtr now %d / %d", len(data), dev.dataBufferPtr, ATA_SECTOR_SIZE)
+
+				if dev.dataBufferPtr >= ATA_SECTOR_SIZE { // A full sector has been received from CPU
+					if dev.currentCommand == ATA_CMD_WRITE_SECTORS || dev.currentCommand == ATA_CMD_WRITE_SECTORS_NO_RETRY {
+						dev.statusReg &= (^ATA_SR_DRQ & 0xFF) // Clear DRQ as we are busy writing
+						dev.statusReg |= ATA_SR_BSY          // Set BSY while writing to disk
+
+						currentLBA := dev.getCurrentLBA()
+						sectorsAlreadyWritten := uint16(0)
+						if dev.sectorCountReg != 0 { // if sectorCountReg was 0, it means 256
+							sectorsAlreadyWritten = uint16(dev.sectorCountReg) - dev.sectorsToTransfer
+						} else {
+							sectorsAlreadyWritten = 256 - dev.sectorsToTransfer
+						}
+						lbaToWrite := currentLBA + uint64(sectorsAlreadyWritten)
+
+						// log.Printf("ATA: Writing sector to disk. LBA: 0x%X", lbaToWrite)
+						err := dev.masterDrive.image.WriteSectors(lbaToWrite, dev.dataBuffer)
+						if err != nil {
+							log.Printf("ATA: Error writing sector 0x%X to disk image: %v", lbaToWrite, err)
+							dev.statusReg |= ATA_SR_ERR
+							dev.errorReg = ATA_ER_UNC // Or more specific error
+							dev.statusReg &= (^ (ATA_SR_BSY | ATA_SR_DRQ) & 0xFF) // Clear BSY & DRQ on error
+							if !dev.nIEN { log.Printf("ATA: WRITE_SECTORS error. IRQ %d (placeholder)", dev.irqNumber) }
+							return valueRead, err // Return early on write error
+						}
+
+						dev.sectorsToTransfer--
+						dev.dataBufferPtr = 0 // Reset for next sector or end
+
+						if dev.sectorsToTransfer == 0 { // All sectors for this command written
+							dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Clear BSY
+							dev.statusReg |= ATA_SR_DRDY         // Set DRDY
+							log.Printf("ATA: WRITE_SECTORS command complete (LBA 0x%X).", lbaToWrite)
+							if !dev.nIEN {
+								log.Printf("ATA: WRITE_SECTORS complete. Signaling IRQ %d (placeholder)", dev.irqNumber)
+								// dev.interruptRaiser.RaiseIRQ(dev.irqNumber)
+							}
+						} else { // More sectors to write for this command
+							dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Clear BSY
+							dev.statusReg |= ATA_SR_DRQ          // Set DRQ for next sector from CPU
+							// DRDY should remain set
+							if !dev.nIEN {
+								log.Printf("ATA: WRITE_SECTORS ready for next sector. Signaling IRQ %d (placeholder)", dev.irqNumber)
+								// dev.interruptRaiser.RaiseIRQ(dev.irqNumber)
+							}
+						}
+					} else {
+						// Data written to data port, but not during a WRITE_SECTORS command. This is unusual.
+						log.Printf("ATA: Data written to data port 0x%X outside of a WRITE_SECTORS command. Current cmd: 0x%02X", port, dev.currentCommand)
+						// May need to clear buffer or handle as error. For now, just log.
+						dev.dataBufferPtr = 0 // Reset pointer to prevent overflow on next actual write.
+					}
+				}
 			} else {
 				// Read from data buffer (handle 16-bit PIO)
-				if (dev.statusReg & ATA_SR_DRQ) == 0 && dev.currentCommand != ATA_CMD_IDENTIFY_DEVICE { // IDENTIFY might not have DRQ for first word
+				if (dev.statusReg & ATA_SR_DRQ) == 0 && dev.currentCommand != ATA_CMD_IDENTIFY_DEVICE {
 					// Do not return error, but value could be garbage if read when not DRQ
 					log.Printf("ATA: Read from data port 0x%X when DRQ is not set. Status: 0x%02X", port, dev.statusReg)
 					// Return last value or 0xFFFF? For now, let it proceed but it's unusual.
@@ -230,13 +296,69 @@ func (dev *ATADevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, e
 							log.Println("ATA: IDENTIFY_DEVICE data transfer complete.")
 						}
 					}
+				} else if dev.currentCommand == ATA_CMD_READ_SECTORS || dev.currentCommand == ATA_CMD_READ_SECTORS_NO_RETRY {
+					if (dev.statusReg & ATA_SR_DRQ) == 0 {
+						log.Printf("ATA: Read from data port 0x%X for READ_SECTORS when DRQ not set. Status: 0x%02X", port, dev.statusReg)
+						valueRead = 0xFF // Or some other error indication, or last byte?
+					} else if dev.dataBufferPtr >= ATA_SECTOR_SIZE { // Should not happen if DRQ is managed correctly per sector
+						log.Printf("ATA: Read from data port 0x%X for READ_SECTORS past sector buffer. Ptr: %d", port, dev.dataBufferPtr)
+						dev.statusReg &= (^ATA_SR_DRQ & 0xFF) // Clear DRQ as data is exhausted for this sector
+						dev.statusReg |= ATA_SR_ERR
+						dev.errorReg = ATA_ER_ABRT
+						valueRead = 0xFF
+					} else {
+						valueRead = dev.dataBuffer[dev.dataBufferPtr]
+						dev.dataBufferPtr++
+
+						if dev.dataBufferPtr >= ATA_SECTOR_SIZE { // End of current sector transferred
+							dev.sectorsToTransfer--
+							dev.statusReg &= (^ATA_SR_DRQ & 0xFF) // Clear DRQ for this sector
+
+							if dev.sectorsToTransfer == 0 { // All sectors for this command transferred
+								log.Printf("ATA: READ_SECTORS command complete.")
+								dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Ensure BSY is clear
+								dev.statusReg |= ATA_SR_DRDY         // Ensure DRDY is set
+								// No interrupt here, interrupt was for DRQ set. Next command will be new.
+							} else { // More sectors to read for this command
+								dev.statusReg |= ATA_SR_BSY // Set BSY for next sector read
+
+								currentLBA := dev.getCurrentLBA() // This LBA was for the *start* of the multi-sector command
+								sectorsAlreadyRead := uint16(dev.sectorCountReg) - dev.sectorsToTransfer
+								if dev.sectorCountReg == 0 { // initial 256 sectors
+									sectorsAlreadyRead = 256 - dev.sectorsToTransfer
+								}
+								nextLBA := currentLBA + uint64(sectorsAlreadyRead)
+
+								log.Printf("ATA: READ_SECTORS reading next sector. Original LBA: 0x%X, Sectors Read: %d, Next LBA: 0x%X", currentLBA, sectorsAlreadyRead, nextLBA)
+
+								sectorData, err := dev.masterDrive.image.ReadSectors(nextLBA, 1)
+								if err != nil {
+									log.Printf("ATA: Error reading sector %d for multi-sector op: %v", nextLBA, err)
+									dev.statusReg |= ATA_SR_ERR
+									dev.errorReg = ATA_ER_UNC
+									dev.statusReg &= (^ (ATA_SR_BSY | ATA_SR_DRQ) & 0xFF)
+									if !dev.nIEN { log.Printf("ATA: READ_SECTORS error (multi-sector). IRQ %d (placeholder)", dev.irqNumber) }
+									return valueRead, nil // Return previously read byte, error is set for next status read
+								}
+								if len(sectorData) != ATA_SECTOR_SIZE {
+									log.Printf("ATA: Disk image ReadSectors (multi) returned %d bytes, expected %d", len(sectorData), ATA_SECTOR_SIZE)
+									dev.statusReg |= ATA_SR_ERR; dev.errorReg = ATA_ER_ABRT
+									dev.statusReg &= (^ (ATA_SR_BSY | ATA_SR_DRQ) & 0xFF)
+									if !dev.nIEN { log.Printf("ATA: READ_SECTORS data size error (multi-sector). IRQ %d (placeholder)", dev.irqNumber) }
+									return valueRead, nil
+								}
+								copy(dev.dataBuffer, sectorData)
+								dev.dataBufferPtr = 0
+
+								dev.statusReg &= (^ATA_SR_BSY & 0xFF)
+								dev.statusReg |= ATA_SR_DRQ
+								if !dev.nIEN { log.Printf("ATA: READ_SECTORS next sector ready. IRQ %d (placeholder)", dev.irqNumber) }
+							}
+						}
+					}
 				} else {
-					// Logic for reading actual sector data from dev.dataBuffer (for READ SECTORS)
-					// This part is not yet fully implemented.
-					// The old `if dev.dataBufferPtr >= len(dev.dataBuffer)` and `word := dev.dataBuffer[dev.dataBufferPtr]`
-					// would go here, adapted for byte-wise return if HandleIO must return uint8.
-					log.Printf("ATA: Read from data port 0x%X for non-IDENTIFY command (Cmd: 0x%02X) - NOT FULLY IMPLEMENTED", port, dev.currentCommand)
-					valueRead = 0xFF // Placeholder for other read commands
+					log.Printf("ATA: Read from data port 0x%X for unhandled command type (Cmd: 0x%02X) while DRQ might be set.", port, dev.currentCommand)
+					valueRead = 0xFF // Placeholder for other read commands or states
 				}
 			}
 		case ATA_REG_ERROR: // 0x1F1 - Read Error Register
@@ -387,24 +509,56 @@ func (dev *ATADevice) processCommand(cmd byte) {
 		}
 
 	case ATA_CMD_READ_SECTORS, ATA_CMD_READ_SECTORS_NO_RETRY:
-		log.Printf("ATA: READ_SECTORS command (LBA: %02X%02X%02X, Count: %d) - NOT FULLY IMPLEMENTED",
-			dev.lbaHighReg, dev.lbaMidReg, dev.lbaLowReg, dev.sectorCountReg)
-		// 1. Set BSY
-		// 2. Read sectors from disk image into internal buffer (dev.dataBuffer)
-		// 3. Clear BSY, Set DRQ
-		// 4. Signal IRQ
-		// Data will be read by CPU from Data Port word by word.
-		// Each word read decrements internal count, when buffer empty & more sectors, repeat.
-		dev.statusReg |= ATA_SR_BSY
-		dev.statusReg &= (^ (ATA_SR_ERR | ATA_SR_DRQ) & 0xFF)
-		// Placeholder:
-		dev.sectorsToTransfer = uint16(dev.sectorCountReg)
-		if dev.sectorsToTransfer == 0 { dev.sectorsToTransfer = 256 } // 0 means 256 sectors
-		// For now, just set DRQ as if one sector is ready.
-		// dev.prepareReadBuffer(lba, 1) // Internal helper
-		dev.statusReg &= (^ATA_SR_BSY & 0xFF)
-		dev.statusReg |= ATA_SR_DRQ
-		if !dev.nIEN { log.Printf("ATA: READ_SECTORS ready for data. Signaling IRQ %d (placeholder)", dev.irqNumber) }
+		dev.statusReg |= ATA_SR_BSY                  // Set BSY
+		dev.statusReg &= (^ (ATA_SR_ERR | ATA_SR_DRQ) & 0xFF) // Clear ERR and DRQ
+
+		lba := dev.getCurrentLBA()
+		sectorCount := uint16(dev.sectorCountReg)
+		if sectorCount == 0 { // 0 means 256 sectors
+			sectorCount = 256
+		}
+		dev.sectorsToTransfer = sectorCount
+
+		log.Printf("ATA: READ_SECTORS command received. LBA: 0x%X, SectorCount: %d", lba, dev.sectorsToTransfer)
+
+		if dev.sectorsToTransfer > 0 {
+			sectorData, err := dev.masterDrive.image.ReadSectors(lba, 1) // Read the first sector
+			if err != nil {
+				log.Printf("ATA: Error reading sector %d from disk image: %v", lba, err)
+				dev.statusReg |= ATA_SR_ERR
+				dev.errorReg = ATA_ER_UNC // Uncorrectable Data Error (generic error for now)
+				dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Clear BSY
+				// Signal interrupt for error
+				if !dev.nIEN {
+					log.Printf("ATA: READ_SECTORS error. Signaling IRQ %d (placeholder)", dev.irqNumber)
+					// dev.interruptRaiser.RaiseIRQ(dev.irqNumber)
+				}
+				return
+			}
+			if len(sectorData) != ATA_SECTOR_SIZE {
+				log.Printf("ATA: Disk image ReadSectors returned %d bytes, expected %d", len(sectorData), ATA_SECTOR_SIZE)
+				dev.statusReg |= ATA_SR_ERR
+				dev.errorReg = ATA_ER_ABRT // Aborted command due to internal error
+				dev.statusReg &= (^ATA_SR_BSY & 0xFF)
+				if !dev.nIEN { log.Printf("ATA: READ_SECTORS data size error. Signaling IRQ %d (placeholder)", dev.irqNumber) }
+				return
+			}
+			copy(dev.dataBuffer, sectorData) // Copy to internal sector buffer
+			dev.dataBufferPtr = 0            // Reset buffer pointer for reading
+
+			dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Clear BSY
+			dev.statusReg |= ATA_SR_DRQ          // Set DRQ, data ready
+			dev.statusReg |= ATA_SR_DRDY         // Ensure DRDY is set
+
+			if !dev.nIEN {
+				log.Printf("ATA: READ_SECTORS first sector ready (LBA 0x%X). Signaling IRQ %d (placeholder)", lba, dev.irqNumber)
+				// dev.interruptRaiser.RaiseIRQ(dev.irqNumber)
+			}
+		} else { // Sector count was 0, which means 256, but if it somehow became 0 after that...
+			log.Printf("ATA: READ_SECTORS called with 0 sectors to transfer after 256 adjustment? CountReg: %d", dev.sectorCountReg)
+			dev.statusReg &= (^ATA_SR_BSY & 0xFF) // Clear BSY
+			// No error, just complete.
+		}
 
 
 	case ATA_CMD_WRITE_SECTORS, ATA_CMD_WRITE_SECTORS_NO_RETRY:
@@ -427,6 +581,11 @@ func (dev *ATADevice) processCommand(cmd byte) {
 		dev.statusReg &= (^ATA_SR_BSY & 0xFF)
 		dev.statusReg |= ATA_SR_DRQ // Ready for CPU to write data
 		// No IRQ yet until data is received and written.
+	// An IRQ will be generated when DRQ is first set.
+		if !dev.nIEN {
+			log.Printf("ATA: WRITE_SECTORS ready for first sector data from CPU. Signaling IRQ %d (placeholder)", dev.irqNumber)
+			// dev.interruptRaiser.RaiseIRQ(dev.irqNumber)
+		}
 
 
 	case ATA_CMD_SET_FEATURES:
