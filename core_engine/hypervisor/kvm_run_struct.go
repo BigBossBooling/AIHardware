@@ -134,10 +134,10 @@ type KvmIo struct {
 
 // Assert that KvmIo is structured as expected (offsets are approximations)
 // These assertions are more for documentation here, actual C struct layout is king.
-var _ [1]struct{} = [unsafe.Offsetof(KvmIo{}.Size) - unsafe.Offsetof(KvmIo{}.Direction)]struct{}{}   // Size should be 1 byte after Direction
-var _ [2]struct{} = [unsafe.Offsetof(KvmIo{}.Port) - unsafe.Offsetof(KvmIo{}.Size)]struct{}{}       // Port should be 1 byte after Size
-var _ [4]struct{} = [unsafe.Offsetof(KvmIo{}.Count) - unsafe.Offsetof(KvmIo{}.Port)]struct{}{}      // Count should be 2 bytes after Port
-var _ [8]struct{} = [unsafe.Offsetof(KvmIo{}.DataOffset) - unsafe.Offsetof(KvmIo{}.Count)]struct{}{} // DataOffset should be 4 bytes after Count
+var _ [1]struct{} = [unsafe.Offsetof(KvmIo{}.Size) - unsafe.Offsetof(KvmIo{}.Direction)]struct{}{}   // Size is 1 byte, immediately after Direction. Offset diff = 1.
+var _ [1]struct{} = [unsafe.Offsetof(KvmIo{}.Port) - unsafe.Offsetof(KvmIo{}.Size)]struct{}{}       // Port is 2 bytes, Size is 1 byte. Port starts 1 byte after Size. Offset diff = 1.
+var _ [2]struct{} = [unsafe.Offsetof(KvmIo{}.Count) - unsafe.Offsetof(KvmIo{}.Port)]struct{}{}      // Count is 4 bytes, Port is 2 bytes. Count starts 2 bytes after Port. Offset diff = 2.
+var _ [4]struct{} = [unsafe.Offsetof(KvmIo{}.DataOffset) - unsafe.Offsetof(KvmIo{}.Count)]struct{}{} // DataOffset is 8 bytes, Count is 4 bytes. DataOffset starts 4 bytes after Count. Offset diff = 4.
 
 
 // Note on KvmRun structure:

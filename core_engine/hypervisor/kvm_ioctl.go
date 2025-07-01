@@ -29,6 +29,8 @@ var KVM_GET_SREGS = IOR(KVMIO, 0x83)
 var KVM_SET_SREGS = IOW(KVMIO, 0x84, unsafe.Sizeof(KvmSregs{}))
 // KVM_GET_MP_STATE defined below
 // KVM_SET_MP_STATE defined below
+var KVM_INTERRUPT = IOR(KVMIO, 0x86) // For injecting interrupts (no params for basic version)
+
 
 // KvmUserspaceMemoryRegion is used for KVM_SET_USER_MEMORY_REGION
 type KvmUserspaceMemoryRegion struct {
@@ -124,7 +126,8 @@ const (
 
 // KVM API Wrappers
 
-func KVM_CREATE_VM(kvmFD int) (int, error) {
+// kvm_ioctl_create_vm uses the KVM_CREATE_VM ioctl to create a new VM.
+func KvmIoctlCreateVM(kvmFD int) (int, error) {
 	vmFD, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFD), uintptr(KVM_CREATE_VM), 0)
 	if errno != 0 {
 		return 0, fmt.Errorf("KVM_CREATE_VM ioctl failed: %s", errno.Error())
@@ -132,22 +135,27 @@ func KVM_CREATE_VM(kvmFD int) (int, error) {
 	return int(vmFD), nil
 }
 
-func KVM_GET_VCPU_MMAP_SIZE() (int, error) {
+// kvm_ioctl_get_vcpu_mmap_size uses the KVM_GET_VCPU_MMAP_SIZE ioctl.
+func KvmIoctlGetVcpuMmapSize() (int, error) {
 	kvmFD, err := syscall.Open("/dev/kvm", syscall.O_RDWR, 0)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open /dev/kvm for KVM_GET_VCPU_MMAP_SIZE: %w", err)
 	}
 	defer syscall.Close(kvmFD)
 
-	size, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFD), uintptr(IOR(KVMIO, 0x04)), 0) // KVM_GET_VCPU_MMAP_SIZE is 0x04
+	// Note: KVM_GET_VCPU_MMAP_SIZE is typically IOR(KVMIO, 0x04)
+	// Ensure this matches the var definition if it's added globally.
+	// For now, using the direct known value.
+	var KVM_GET_VCPU_MMAP_SIZE = IOR(KVMIO, 0x04)
+	size, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFD), uintptr(KVM_GET_VCPU_MMAP_SIZE), 0)
 	if errno != 0 {
 		return 0, fmt.Errorf("KVM_GET_VCPU_MMAP_SIZE ioctl failed: %s", errno.Error())
 	}
 	return int(size), nil
 }
 
-
-func KVM_SET_USER_MEMORY_REGION(vmFD int, slot uint32, guestPhysAddr uint64, memorySize uint64, userspaceAddr uintptr) error {
+// kvm_ioctl_set_user_memory_region uses the KVM_SET_USER_MEMORY_REGION ioctl.
+func KvmIoctlSetUserMemoryRegion(vmFD int, slot uint32, guestPhysAddr uint64, memorySize uint64, userspaceAddr uintptr) error {
 	region := KvmUserspaceMemoryRegion{
 		Slot:          slot,
 		Flags:         0, // Optional flags like KVM_MEM_LOG_DIRTY_PAGES
@@ -162,8 +170,8 @@ func KVM_SET_USER_MEMORY_REGION(vmFD int, slot uint32, guestPhysAddr uint64, mem
 	return nil
 }
 
-
-func KVM_CREATE_VCPU(vmFD int, vcpuID int) (int, error) {
+// kvm_ioctl_create_vcpu uses the KVM_CREATE_VCPU ioctl.
+func KvmIoctlCreateVcpu(vmFD int, vcpuID int) (int, error) {
 	vcpuFD, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vmFD), uintptr(KVM_CREATE_VCPU), uintptr(vcpuID))
 	if errno != 0 {
 		return 0, fmt.Errorf("KVM_CREATE_VCPU ioctl failed: %s", errno.Error())
@@ -171,17 +179,17 @@ func KVM_CREATE_VCPU(vmFD int, vcpuID int) (int, error) {
 	return int(vcpuFD), nil
 }
 
-func KVM_RUN(vcpuFD int) (uintptr, error) {
+// kvm_ioctl_run uses the KVM_RUN ioctl.
+func KvmIoctlRun(vcpuFD int) (uintptr, error) {
 	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_RUN), 0)
-	// KVM_RUN can return -1 with errno EINTR if interrupted by a signal,
-	// or other errors. Specific error handling might be needed.
-	if errno != 0 && errno != syscall.EINTR {
+	if errno != 0 && errno != syscall.EINTR { // EINTR is a valid reason for KVM_RUN to return
 		return ret, fmt.Errorf("KVM_RUN ioctl failed: %s", errno.Error())
 	}
-	return ret, nil // Return value of KVM_RUN itself is usually 0 on success or -1 on error
+	return ret, nil
 }
 
-func KVM_GET_REGS(vcpuFD int) (*KvmRegs, error) {
+// kvm_ioctl_get_regs uses the KVM_GET_REGS ioctl.
+func KvmIoctlGetRegs(vcpuFD int) (*KvmRegs, error) {
 	var regs KvmRegs
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_GET_REGS), uintptr(unsafe.Pointer(&regs)))
 	if errno != 0 {
@@ -190,7 +198,8 @@ func KVM_GET_REGS(vcpuFD int) (*KvmRegs, error) {
 	return &regs, nil
 }
 
-func KVM_SET_REGS(vcpuFD int, regs *KvmRegs) error {
+// kvm_ioctl_set_regs uses the KVM_SET_REGS ioctl.
+func KvmIoctlSetRegs(vcpuFD int, regs *KvmRegs) error {
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_SET_REGS), uintptr(unsafe.Pointer(regs)))
 	if errno != 0 {
 		return fmt.Errorf("KVM_SET_REGS ioctl failed: %s", errno.Error())
@@ -198,7 +207,8 @@ func KVM_SET_REGS(vcpuFD int, regs *KvmRegs) error {
 	return nil
 }
 
-func KVM_GET_SREGS(vcpuFD int) (*KvmSregs, error) {
+// kvm_ioctl_get_sregs uses the KVM_GET_SREGS ioctl.
+func KvmIoctlGetSregs(vcpuFD int) (*KvmSregs, error) {
 	var sregs KvmSregs
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_GET_SREGS), uintptr(unsafe.Pointer(&sregs)))
 	if errno != 0 {
@@ -207,7 +217,8 @@ func KVM_GET_SREGS(vcpuFD int) (*KvmSregs, error) {
 	return &sregs, nil
 }
 
-func KVM_SET_SREGS(vcpuFD int, sregs *KvmSregs) error {
+// kvm_ioctl_set_sregs uses the KVM_SET_SREGS ioctl.
+func KvmIoctlSetSregs(vcpuFD int, sregs *KvmSregs) error {
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_SET_SREGS), uintptr(unsafe.Pointer(sregs)))
 	if errno != 0 {
 		return fmt.Errorf("KVM_SET_SREGS ioctl failed: %s", errno.Error())
@@ -215,12 +226,23 @@ func KVM_SET_SREGS(vcpuFD int, sregs *KvmSregs) error {
 	return nil
 }
 
-func KVM_CHECK_EXTENSION(kvmFD int, cap int) (int, error) {
+// kvm_ioctl_check_extension uses the KVM_CHECK_EXTENSION ioctl.
+func KvmIoctlCheckExtension(kvmFD int, cap int) (int, error) {
 	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(kvmFD), uintptr(KVM_CHECK_EXTENSION), uintptr(cap))
 	if errno != 0 {
-		// KVM_CHECK_EXTENSION returns 0 if extension is not available, >0 if available.
-		// An errno usually means a more fundamental ioctl error.
 		return 0, fmt.Errorf("KVM_CHECK_EXTENSION ioctl failed for cap %d: %s", cap, errno.Error())
 	}
 	return int(ret), nil
+}
+
+// KvmIoctlInterrupt sends an interrupt vector to the VCPU using KVM_INTERRUPT.
+func KvmIoctlInterrupt(vcpuFD int, irq uint8) error {
+	// The KVM_INTERRUPT ioctl takes the interrupt vector as its argument.
+	// It's defined as _IO(KVMIO, 0x86) in <linux/kvm.h>, which means it's an IOR with no parameter size.
+	// Our KVM_INTERRUPT var is defined as IOR(KVMIO, 0x86).
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(vcpuFD), uintptr(KVM_INTERRUPT), uintptr(irq))
+	if errno != 0 {
+		return fmt.Errorf("KVM_INTERRUPT ioctl failed for irq %d: %s", irq, errno.Error())
+	}
+	return nil
 }

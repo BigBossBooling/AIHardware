@@ -5,7 +5,7 @@ import (
 )
 
 func TestPITNewPITDevice(t *testing.T) {
-	pit := NewPITDevice()
+	pit := NewPITDevice(nil) // Added nil for InterruptRaiser
 	if pit == nil {
 		t.Fatal("NewPITDevice returned nil")
 	}
@@ -13,8 +13,8 @@ func TestPITNewPITDevice(t *testing.T) {
 		if ch.mode != PIT_CMD_MODE0 {
 			t.Errorf("Channel %d: Expected mode %X, got %X", i, PIT_CMD_MODE0, ch.mode)
 		}
-		if ch.accessMode != PIT_CMD_ACCESS_LOHI {
-			t.Errorf("Channel %d: Expected accessMode %X, got %X", i, PIT_CMD_ACCESS_LOHI, ch.accessMode)
+		if ch.accessMode != PIT_CMD_RW_LSB_MSB { // Renamed PIT_CMD_ACCESS_LOHI
+			t.Errorf("Channel %d: Expected accessMode %X, got %X", i, PIT_CMD_RW_LSB_MSB, ch.accessMode)
 		}
 		expectedGate := i < 2
 		if ch.gate != expectedGate {
@@ -24,11 +24,12 @@ func TestPITNewPITDevice(t *testing.T) {
 }
 
 func TestPITCommandRegisterWrite(t *testing.T) {
-	pit := NewPITDevice()
+	pit := NewPITDevice(nil) // Added nil for InterruptRaiser
 
 	// Program Channel 0, Mode 3, LSB/MSB access, Binary
-	cmdCh0Mode3 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE3 | PIT_CMD_BINARY)
-	_, err := pit.HandleIO(PIT_COMMAND_PORT, []byte{cmdCh0Mode3}, true)
+	// Binary mode is implicit if PIT_CMD_BCD_MASK is not set in the command byte.
+	cmdCh0Mode3 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_RW_LSB_MSB | PIT_CMD_MODE3) // Removed PIT_CMD_BINARY
+	_, err := pit.HandleIO(PIT_COMMAND_REG, []byte{cmdCh0Mode3}, true) // Renamed PIT_COMMAND_PORT
 	if err != nil {
 		t.Fatalf("Error writing command to PIT: %v", err)
 	}
@@ -37,10 +38,10 @@ func TestPITCommandRegisterWrite(t *testing.T) {
 	if ch0.mode != PIT_CMD_MODE3 {
 		t.Errorf("Ch0: Expected mode %X, got %X", PIT_CMD_MODE3, ch0.mode)
 	}
-	if ch0.accessMode != PIT_CMD_ACCESS_LOHI {
-		t.Errorf("Ch0: Expected accessMode %X, got %X", PIT_CMD_ACCESS_LOHI, ch0.accessMode)
+	if ch0.accessMode != PIT_CMD_RW_LSB_MSB { // Renamed PIT_CMD_ACCESS_LOHI
+		t.Errorf("Ch0: Expected accessMode %X, got %X", PIT_CMD_RW_LSB_MSB, ch0.accessMode)
 	}
-	if ch0.bcdMode != false {
+	if ch0.bcdMode != false { // This check is correct as bcdMode is false for binary
 		t.Errorf("Ch0: Expected binary mode, got BCD")
 	}
 	if !ch0.output { // Mode 3 output should be high after programming
@@ -48,8 +49,8 @@ func TestPITCommandRegisterWrite(t *testing.T) {
 	}
 
 	// Latch Channel 1 counter
-	cmdLatchCh1 := byte(PIT_CMD_CHANNEL1 | PIT_CMD_LATCH_COUNT)
-	_, err = pit.HandleIO(PIT_COMMAND_PORT, []byte{cmdLatchCh1}, true)
+	cmdLatchCh1 := byte(PIT_CMD_CHANNEL1 | PIT_CMD_RW_LATCH) // Renamed PIT_CMD_LATCH_COUNT
+	_, err = pit.HandleIO(PIT_COMMAND_REG, []byte{cmdLatchCh1}, true) // Renamed PIT_COMMAND_PORT
 	if err != nil {
 		t.Fatalf("Error writing latch command to PIT: %v", err)
 	}
@@ -60,12 +61,12 @@ func TestPITCommandRegisterWrite(t *testing.T) {
 }
 
 func TestPITCounterReadWrite(t *testing.T) {
-	pit := NewPITDevice()
+	pit := NewPITDevice(nil) // Added nil for InterruptRaiser
 	ch0 := &pit.channels[0]
 
 	// Program Channel 0, Mode 2, LSB/MSB access, Binary
-	cmdCh0Mode2 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE2 | PIT_CMD_BINARY)
-	_, err := pit.HandleIO(PIT_COMMAND_PORT, []byte{cmdCh0Mode2}, true)
+	cmdCh0Mode2 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_RW_LSB_MSB | PIT_CMD_MODE2) // Implicitly binary
+	_, err := pit.HandleIO(PIT_COMMAND_REG, []byte{cmdCh0Mode2}, true) // Renamed constants
 	if err != nil {
 		t.Fatalf("Error programming Ch0 for read/write test: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestPITCounterReadWrite(t *testing.T) {
 	valLSB := byte(0x34)
 	valMSB := byte(0x12)
 
-	_, err = pit.HandleIO(PIT_COUNTER0_PORT, []byte{valLSB}, true) // Write LSB
+	_, err = pit.HandleIO(PIT_CHANNEL0_DATA, []byte{valLSB}, true) // Write LSB; Renamed constant
 	if err != nil {
 		t.Fatalf("Error writing LSB to Ch0: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestPITCounterReadWrite(t *testing.T) {
 	}
 
 
-	_, err = pit.HandleIO(PIT_COUNTER0_PORT, []byte{valMSB}, true) // Write MSB
+	_, err = pit.HandleIO(PIT_CHANNEL0_DATA, []byte{valMSB}, true) // Write MSB; Renamed constant
 	if err != nil {
 		t.Fatalf("Error writing MSB to Ch0: %v", err)
 	}
@@ -105,8 +106,8 @@ func TestPITCounterReadWrite(t *testing.T) {
 
 
 	// Latch Channel 0 counter before reading
-	cmdLatchCh0 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_LATCH_COUNT)
-	_, err = pit.HandleIO(PIT_COMMAND_PORT, []byte{cmdLatchCh0}, true)
+	cmdLatchCh0 := byte(PIT_CMD_CHANNEL0 | PIT_CMD_RW_LATCH) // Renamed constant
+	_, err = pit.HandleIO(PIT_COMMAND_REG, []byte{cmdLatchCh0}, true) // Renamed constant
 	if err != nil {
 		t.Fatalf("Error latching Ch0 for read: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestPITCounterReadWrite(t *testing.T) {
 
 
 	// Read back LSB
-	readLSB, err := pit.HandleIO(PIT_COUNTER0_PORT, nil, false)
+	readLSB, err := pit.HandleIO(PIT_CHANNEL0_DATA, nil, false) // Renamed constant
 	if err != nil {
 		t.Fatalf("Error reading LSB from Ch0: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestPITCounterReadWrite(t *testing.T) {
 	}
 
 	// Read back MSB
-	readMSB, err := pit.HandleIO(PIT_COUNTER0_PORT, nil, false)
+	readMSB, err := pit.HandleIO(PIT_CHANNEL0_DATA, nil, false) // Renamed constant
 	if err != nil {
 		t.Fatalf("Error reading MSB from Ch0: %v", err)
 	}
@@ -150,19 +151,19 @@ func TestPITCounterReadWrite(t *testing.T) {
 }
 
 func TestPITReadBackCommand(t *testing.T) {
-	pit := NewPITDevice()
+	pit := NewPITDevice(nil) // Added nil for InterruptRaiser
 
 	// Program Channel 0, Mode 3, LSB/MSB access, BCD
-	cmdCh0Prog := byte(PIT_CMD_CHANNEL0 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE3 | PIT_CMD_BCD)
-	_, err := pit.HandleIO(PIT_COMMAND_PORT, []byte{cmdCh0Prog}, true)
+	cmdCh0Prog := byte(PIT_CMD_CHANNEL0 | PIT_CMD_RW_LSB_MSB | PIT_CMD_MODE3 | PIT_CMD_BCD_MASK) // Use BCD_MASK
+	_, err := pit.HandleIO(PIT_COMMAND_REG, []byte{cmdCh0Prog}, true) // Renamed constants
 	if err != nil { t.Fatalf("Cmd write failed: %v", err) }
 
 	// Load count 0x1234 (BCD representation if BCD mode was fully working for value, but count is stored binary)
 	// For this test, actual value doesn't matter as much as status bits.
 	// PIT stores reloadValue and count as binary even if BCD mode is set. BCD affects interpretation at I/O.
-	_, err = pit.HandleIO(PIT_COUNTER0_PORT, []byte{0x34}, true) // LSB
+	_, err = pit.HandleIO(PIT_CHANNEL0_DATA, []byte{0x34}, true) // LSB; Renamed constant
 	if err != nil { t.Fatalf("LSB write failed: %v", err) }
-	_, err = pit.HandleIO(PIT_COUNTER0_PORT, []byte{0x12}, true) // MSB
+	_, err = pit.HandleIO(PIT_CHANNEL0_DATA, []byte{0x12}, true) // MSB; Renamed constant
 	if err != nil { t.Fatalf("MSB write failed: %v", err) }
 
 	// Set output pin state for testing read-back (not dynamically changed by Tick in this test)
@@ -171,12 +172,16 @@ func TestPITReadBackCommand(t *testing.T) {
 
 
 	// Read-back command for Channel 0, latch count and status
-	rbCmd := byte(PIT_CMD_READ_BACK | PIT_RB_CHANNEL0 | ^PIT_RB_DONT_LATCH_COUNT | ^PIT_RB_DONT_LATCH_STATUS)
-	// Note: ^PIT_RB_DONT_LATCH_COUNT actually means DO latch count (bit is 0 to latch)
-	// So, it should be:
-	rbCmd = byte(PIT_CMD_READ_BACK | PIT_RB_CHANNEL0) // This means latch count & status for Ch0
+	// To latch count and status, PIT_RB_DONT_LATCH_COUNT and PIT_RB_DONT_LATCH_STATUS should be 0.
+	// The command is 11SC élus, where S are channel selects, C is count latch bit (0=latch), U is status latch bit (0=latch)
+	// So, if PIT_RB_DONT_LATCH_COUNT is bit 5 (1<<5), to latch count, this bit in cmd must be 0.
+	// The command structure is: 11 <CH2> <CH1> <CH0> <!COUNT> <!STATUS> <0>
+	// Our constants are defined as the bit itself. So, for latching, these bits should NOT be set in cmd.
+	rbCmd := byte( (0x03 << 6) | PIT_RB_CHANNEL0) // This means 11000010 - Latch count & status for Ch0.
+	// Bits 7,6 are 1,1 for readback. Bit 0 is reserved (0).
+	// Bit 1 selects CH0. Bit 4 (status) and Bit 5 (count) are 0 to latch.
 
-	_, err = pit.HandleIO(PIT_COMMAND_PORT, []byte{rbCmd}, true)
+	_, err = pit.HandleIO(PIT_COMMAND_REG, []byte{rbCmd}, true) // Renamed constant
 	if err != nil {
 		t.Fatalf("Error writing read-back command: %v", err)
 	}
@@ -194,9 +199,9 @@ func TestPITReadBackCommand(t *testing.T) {
 	expectedStatus := byte(0x00)
 	if ch0.outputPin { expectedStatus |= 0x80 }
 	if ch0.nullCount { expectedStatus |= 0x40 } // Should be false
-	expectedStatus |= (PIT_CMD_ACCESS_LOHI & 0x30)
-	expectedStatus |= (PIT_CMD_MODE3 & 0x0E)
-	if ch0.bcdMode { expectedStatus |= PIT_CMD_BCD }
+	expectedStatus |= (ch0.accessMode & 0x30) // Use actual programmed access mode
+	expectedStatus |= (ch0.mode & 0x0E)       // Use actual programmed op mode
+	if ch0.bcdMode { expectedStatus |= PIT_CMD_BCD_MASK } // Use BCD_MASK
 
 
 	if ch0.latchedStatus != expectedStatus {
@@ -214,7 +219,7 @@ func TestPITReadBackCommand(t *testing.T) {
 }
 
 func TestPITPort61Handling(t *testing.T) {
-	pit := NewPITDevice()
+	pit := NewPITDevice(nil) // Added nil for InterruptRaiser
 
 	// Write to Port 0x61
 	writeData := byte(0x03) // Example: Speaker data enable, PIT Channel 2 Gate to Speaker enable

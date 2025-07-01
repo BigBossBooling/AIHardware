@@ -43,19 +43,18 @@ type PITChannel struct {
 type PITDevice struct {
 	mu       sync.Mutex
 	channels [pitNumChannels]PITChannel
-	// Potentially a reference to PIC for generating interrupts
-	// pic      InterruptController
+	pic      InterruptRaiser // Reference to PIC for generating interrupts
 	port61State byte // Store state of relevant bits from port 0x61
 }
 
 // NewPITDevice creates and initializes a new PITDevice.
-func NewPITDevice(/*pic InterruptController*/) *PITDevice {
+func NewPITDevice(pic InterruptRaiser) *PITDevice {
 	pit := &PITDevice{
-		// pic: pic,
+		pic: pic,
 	}
 	for i := 0; i < pitNumChannels; i++ {
 		pit.channels[i].mode = PIT_CMD_MODE0 // Default mode, though typically configured by BIOS
-		pit.channels[i].accessMode = PIT_CMD_ACCESS_LOHI // Default access
+		pit.channels[i].accessMode = PIT_CMD_RW_LSB_MSB // Default access (lo/hi)
 		pit.channels[i].gate = (i < 2) // Channel 0 and 1 gates are usually high by default
 		pit.channels[i].output = false // Default output state
 		pit.channels[i].nullCount = true
@@ -68,7 +67,7 @@ func NewPITDevice(/*pic InterruptController*/) *PITDevice {
 
 // HandleIO processes I/O operations on the PIT registers.
 // Returns the value read for read operations (or 0 for writes), and an error if any.
-func (pit *PITDevice) HandleIO(port uint64, data []byte, isWrite bool) (uint8, error) {
+func (pit *PITDevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, error) {
 	pit.mu.Lock()
 	defer pit.mu.Unlock()
 
@@ -83,7 +82,7 @@ func (pit *PITDevice) HandleIO(port uint64, data []byte, isWrite bool) (uint8, e
 			// Update channel 2 gate based on bit 0 of port 0x61 (this is a common setup)
 			// ch2Gate := (val & 0x01) != 0 // Typically bit 0 of port 0x61 controls gate of channel 2
 			// pit.channels[2].setGate(ch2Gate)
-			fmt.Printf("PIT: Port 0x61 write: 0x%02X. Channel 2 gate/speaker TBD.\n", val)
+			// fmt.Printf("PIT: Port 0x61 write: 0x%02X. Channel 2 gate/speaker TBD.\n", val)
 			return 0, nil
 		}
 		// Reading from 0x61 returns its current state.
@@ -94,38 +93,49 @@ func (pit *PITDevice) HandleIO(port uint64, data []byte, isWrite bool) (uint8, e
 		return pit.port61State, nil // Simplified
 	}
 
+	// Check if the port is one of the PIT channel data ports or the command register
+	isPitPort := false
+	channelIndex := -1
 
-	if port >= PIT_COUNTER0_PORT && port <= PIT_COMMAND_PORT {
-		channelIndex := -1
-		if port != PIT_COMMAND_PORT {
-			channelIndex = int(port - PIT_COUNTER0_PORT)
-		}
+	switch port {
+	case PIT_CHANNEL0_DATA:
+		isPitPort = true
+		channelIndex = 0
+	case PIT_CHANNEL1_DATA:
+		isPitPort = true
+		channelIndex = 1
+	case PIT_CHANNEL2_DATA:
+		isPitPort = true
+		channelIndex = 2
+	case PIT_COMMAND_REG:
+		isPitPort = true
+		// channelIndex remains -1 for command register
+	}
 
+	if isPitPort {
 		if isWrite {
 			if len(data) == 0 {
 				return 0, fmt.Errorf("pit: write operation with no data on port 0x%x", port)
 			}
 			val := data[0]
 
-			if port == PIT_COMMAND_PORT {
+			if port == PIT_COMMAND_REG {
 				pit.handleCommandWrite(val)
-			} else if channelIndex >= 0 && channelIndex < pitNumChannels {
+			} else { // Must be a channel data port
 				pit.channels[channelIndex].handleCounterWrite(val)
-			} else {
-				return 0, fmt.Errorf("pit: write to unhandled PIT port 0x%x", port)
 			}
 			return 0, nil // No value returned for writes to PIT data/command ports
 		} else { // Read operation
-			if port == PIT_COMMAND_PORT {
+			if port == PIT_COMMAND_REG {
 				// Command port is write-only according to most specs. Some emulators return 0 or last value.
 				// Bochs returns 0. Let's stick to that.
 				return 0, nil
-			} else if channelIndex >= 0 && channelIndex < pitNumChannels {
+			} else { // Must be a channel data port
 				return pit.channels[channelIndex].handleCounterRead(), nil
 			}
-			return 0, fmt.Errorf("pit: read from unhandled PIT port 0x%x", port)
 		}
 	}
+
 	return 0, fmt.Errorf("pit: access to unhandled port 0x%x", port)
 }
 
@@ -134,7 +144,9 @@ func (pit *PITDevice) handleCommandWrite(cmd byte) {
 	channelSelect := (cmd & PIT_CMD_CHANNEL_MASK) >> 6
 	accessMode := (cmd & PIT_CMD_ACCESS_MASK)
 	opMode := (cmd & PIT_CMD_MODE_MASK)
-	bcd := (cmd & PIT_CMD_BCD_MASK) == PIT_CMD_BCD
+	// In pic_constants.go: PIT_CMD_BINARY_MODE = 0 means binary, 1 means BCD.
+	// PIT_CMD_BCD_MASK is 1. So if (cmd & PIT_CMD_BCD_MASK) != 0, it's BCD.
+	bcd := (cmd & PIT_CMD_BCD_MASK) != 0
 
 	// fmt.Printf("PIT CMD: 0x%02X (Ch: %d, Access: 0x%X, Mode: 0x%X, BCD: %v)\n",
 	//	cmd, channelSelect, accessMode>>4, opMode>>1, bcd)
@@ -149,7 +161,7 @@ func (pit *PITDevice) handleCommandWrite(cmd byte) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 
-	if accessMode == PIT_CMD_LATCH_COUNT { // Latch command for selected channel
+	if accessMode == PIT_CMD_RW_LATCH { // Latch command for selected channel
 		ch.latchedValue = ch.readCurrentCount()
 		ch.countLatched = true
 		ch.readState = 0 // Reset read state for subsequent reads from counter port
@@ -229,13 +241,13 @@ func (ch *PITChannel) handleCounterWrite(val byte) {
 	// fmt.Printf("PIT Counter Write: Val=0x%02X, AccessMode=0x%X, WriteState=%d\n", val, ch.accessMode>>4, ch.writeState)
 
 	switch ch.accessMode {
-	case PIT_CMD_ACCESS_LO: // LSB only
+	case PIT_CMD_RW_LSB_ONLY: // LSB only
 		ch.reloadValue = uint16(val)
 		ch.writeState = 0 // Done
-	case PIT_CMD_ACCESS_HI: // MSB only
+	case PIT_CMD_RW_MSB_ONLY: // MSB only
 		ch.reloadValue = uint16(val) << 8
 		ch.writeState = 0 // Done
-	case PIT_CMD_ACCESS_LOHI: // LSB then MSB
+	case PIT_CMD_RW_LSB_MSB: // LSB then MSB
 		if ch.writeState == 0 { // Expecting LSB
 			ch.reloadValue = (ch.reloadValue & 0xFF00) | uint16(val)
 			ch.writeState = 1 // Next is MSB
@@ -287,13 +299,13 @@ func (ch *PITChannel) handleCounterRead() byte {
 	if ch.countLatched { // If count was latched by a latch command or read-back
 		// Read from latchedValue
 		switch ch.accessMode {
-		case PIT_CMD_ACCESS_LO:
+		case PIT_CMD_RW_LSB_ONLY:
 			val = byte(ch.latchedValue & 0xFF)
 			ch.countLatched = false // Latch is consumed after full read sequence
-		case PIT_CMD_ACCESS_HI:
+		case PIT_CMD_RW_MSB_ONLY:
 			val = byte((ch.latchedValue >> 8) & 0xFF)
 			ch.countLatched = false
-		case PIT_CMD_ACCESS_LOHI:
+		case PIT_CMD_RW_LSB_MSB:
 			if ch.readState == 0 { // Read LSB
 				val = byte(ch.latchedValue & 0xFF)
 				ch.readState = 1
@@ -322,11 +334,11 @@ func (ch *PITChannel) handleCounterRead() byte {
 	// Read current counter value on-the-fly
 	currentCount := ch.readCurrentCount()
 	switch ch.accessMode {
-	case PIT_CMD_ACCESS_LO:
+	case PIT_CMD_RW_LSB_ONLY:
 		val = byte(currentCount & 0xFF)
-	case PIT_CMD_ACCESS_HI:
+	case PIT_CMD_RW_MSB_ONLY:
 		val = byte((currentCount >> 8) & 0xFF)
-	case PIT_CMD_ACCESS_LOHI:
+	case PIT_CMD_RW_LSB_MSB:
 		if ch.readState == 0 { // Read LSB
 			val = byte(currentCount & 0xFF)
 			ch.readState = 1
@@ -409,17 +421,39 @@ func (pit *PITDevice) Tick() {
 	//          ch0.count = ch0.reloadValue // Reload
 	//          // Handle output toggle for Mode 3, pulse for Mode 2
 	//          // if pit.pic != nil && ch0.mode == PIT_CMD_MODE2 || ch0.mode == PIT_CMD_MODE3 { // Simplified condition
-	//          //    pit.pic.RequestInterrupt(0) // IRQ0
+	//          //    pit.pic.RaiseIRQ(pit.GetIRQLine())
 	//          // }
 	//          fmt.Printf("PIT Ch0: Terminal count, reloaded to 0x%04X (simulated)\n", ch0.reloadValue)
 	//       }
 	//    }
 	// }
+
+	// Simulate a timer interrupt for channel 0 if it's configured and time for it.
+	// This is a very basic placeholder for actual timer logic.
+	// In a real system, this would be driven by the PIT's internal clock and counter.
+	// For now, let's imagine we can call a method to simulate an IRQ0 pulse.
+	// pit.SimulateIRQ0() // This would be called based on timing logic.
 	// This is a very rough sketch. Accurate PIT simulation is complex.
-	// For now, we focus on register I/O. Actual timed events are deferred.
+	// For now, we focus on register I/O. Actual timed events are deferred for full implementation.
+}
+
+// SimulateIRQ0 is a placeholder to manually trigger IRQ0 from PIT.
+// This would be called by the PIT's internal timing logic when channel 0 reaches terminal count.
+func (pit *PITDevice) SimulateIRQ0() {
+	if pit.pic != nil {
+		// fmt.Println("PIT: Simulating IRQ0")
+		pit.pic.RaiseIRQ(pit.GetIRQLine())
+		// In a real scenario, the IRQ might be lowered after acknowledgment or by the PIC logic itself.
+		// For edge-triggered, the PIC latches it.
+	}
 }
 
 // GetIRQLine returns the IRQ line this device would use (typically IRQ0 for channel 0).
 func (pit *PITDevice) GetIRQLine() uint8 {
 	return 0 // PIT Channel 0 is usually IRQ0
 }
+
+// TODO: A more complete PIT would have an internal ticker or a way for the main VM loop
+// to advance its state and check for timer expirations.
+// For instance, the vCPU loop could periodically call a method on PITDevice
+// that updates internal counters based on elapsed time and triggers interrupts.

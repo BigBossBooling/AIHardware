@@ -18,14 +18,14 @@ type RTCDevice struct {
 	selectedIndex byte   // Currently selected register index (via port 0x70)
 	registers     [rtcNumRegisters]byte // CMOS RAM, including RTC registers
 
-	// pic InterruptController // For signaling RTC interrupts (IRQ 8)
+	pic InterruptRaiser // For signaling RTC interrupts (IRQ 8)
 	nmiDisabled bool
 }
 
 // NewRTCDevice creates and initializes a new RTCDevice.
-func NewRTCDevice(/*pic InterruptController*/) *RTCDevice {
+func NewRTCDevice(pic InterruptRaiser) *RTCDevice {
 	rtc := &RTCDevice{
-		// pic: pic,
+		pic: pic,
 	}
 	rtc.initDefaultRegisters()
 	return rtc
@@ -54,7 +54,7 @@ func (rtc *RTCDevice) initDefaultRegisters() {
 
 // HandleIO processes I/O operations on the RTC registers.
 // Returns the value read for read operations, and an error if any.
-func (rtc *RTCDevice) HandleIO(port uint64, data []byte, isWrite bool) (uint8, error) {
+func (rtc *RTCDevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, error) {
 	rtc.mu.Lock()
 	defer rtc.mu.Unlock()
 
@@ -118,7 +118,7 @@ func (rtc *RTCDevice) readRegister(index byte) byte {
 	}
 
 	isBCD := (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_DM) == 0
-	is12Hour := (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_24H) == 0
+	is12Hour := (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_24H) == 0 // 0 means 12-hour mode
 
 	now := time.Now() // Get current host time
 
@@ -164,17 +164,24 @@ func (rtc *RTCDevice) readRegister(index byte) byte {
 		// Real hardware sets UIP for ~244us during update cycle.
 		// We can simulate it by briefly setting it if a write to time occurs, or assume reads are fast enough.
 		// For now, return stored value, ensuring UIP is normally 0 unless we explicitly manage update cycles.
-		return rtc.registers[RTC_REG_STATUS_A] & ^RTC_REGA_UIP // Assume UIP is not active for reads generally
+		return rtc.registers[RTC_REG_STATUS_A] & (^RTC_REGA_UIP & 0xFF) // Assume UIP is not active for reads generally
 	case RTC_REG_STATUS_B:
 		return rtc.registers[RTC_REG_STATUS_B]
 	case RTC_REG_STATUS_C:
 		// Reading Status Register C clears the interrupt flags (PF, AF, UF) and IRQF.
 		val := rtc.registers[RTC_REG_STATUS_C]
 		rtc.registers[RTC_REG_STATUS_C] = 0 // Clear flags after read
-		// TODO: This should also clear the interrupt request to the PIC if one was active due to these flags.
-		// if (val & (RTC_REGC_PF | RTC_REGC_AF | RTC_REGC_UF)) != 0 && rtc.pic != nil {
-		//    rtc.pic.ClearInterrupt(RTC_IRQ) // Or manage EOI
-		// }
+		// Reading Status Register C clears the interrupt flags. If IRQF was set, it means an interrupt was pending.
+		// The PIC's corresponding IRQ line (IRQ8) would have been raised.
+		// Clearing IRQF here implies the source of interrupt is acknowledged at the RTC level.
+		// The CPU would still need to EOI the PIC.
+		if (val & RTC_REGC_IRQF) != 0 && rtc.pic != nil {
+			// This is a simplification. The IRQ is typically lowered by the PIC after EOI,
+			// or if the RTC de-asserts its interrupt line.
+			// For edge-triggered interrupts, simply clearing flags in RTC might not lower line immediately.
+			// However, preventing re-assertion until a new event is reasonable.
+			// rtc.pic.LowerIRQ(rtc.GetIRQLine()) // Tentative, depends on how LowerIRQ is implemented for PIC
+		}
 		return val
 	case RTC_REG_STATUS_D:
 		// VRT bit (CMOS battery status)
@@ -233,7 +240,7 @@ func (rtc *RTCDevice) writeRegister(index byte, value byte) {
 		// TODO: Handle "don't care" bits if BCD mode (e.g. C0-FF) for alarm.
 		// For now, store directly.
 		rtc.registers[index] = value
-		rtc.registers[RTC_REG_STATUS_C] &= ^RTC_REGC_AF // Clear Alarm Flag if alarm is reprogrammed
+		rtc.registers[RTC_REG_STATUS_C] &= (^RTC_REGC_AF & 0xFF) // Clear Alarm Flag if alarm is reprogrammed
 		// fmt.Printf("RTC: Alarm register 0x%02X set to 0x%02X.\n", index, value)
 		// checkAlarm() might be called here.
 
@@ -242,7 +249,7 @@ func (rtc *RTCDevice) writeRegister(index byte, value byte) {
 		// Allow writing to RS part. Mask off read-only parts.
 		currentRS := rtc.registers[RTC_REG_STATUS_A] & RTC_REGA_RATE_MASK
 		newRS := value & RTC_REGA_RATE_MASK
-		rtc.registers[RTC_REG_STATUS_A] = (rtc.registers[RTC_REG_STATUS_A] & ^RTC_REGA_RATE_MASK) | newRS
+		rtc.registers[RTC_REG_STATUS_A] = (rtc.registers[RTC_REG_STATUS_A] & (^RTC_REGA_RATE_MASK & 0xFF)) | newRS
 		if newRS != currentRS {
 			// TODO: Periodic timer rate changed. Reset periodic interrupt logic.
 			// fmt.Printf("RTC: Status A Rate Select changed to 0x%X.\n", newRS)
@@ -318,7 +325,7 @@ func (rtc *RTCDevice) Tick(elapsedTime time.Duration) {
 			// For now, this is a placeholder for when such a timer is available.
 			// If period elapsed:
 			//   rtc.registers[RTC_REG_STATUS_C] |= RTC_REGC_PF | RTC_REGC_IRQF
-			//   if rtc.pic != nil { rtc.pic.RequestInterrupt(RTC_IRQ) }
+			//   if rtc.pic != nil { rtc.pic.RaiseIRQ(rtc.GetIRQLine()) }
 		}
 	}
 
@@ -331,7 +338,7 @@ func (rtc *RTCDevice) Tick(elapsedTime time.Duration) {
 		// Also handle "don't care" fields in alarm registers.
 		// If alarm matches:
 		//   rtc.registers[RTC_REG_STATUS_C] |= RTC_REGC_AF | RTC_REGC_IRQF
-		//   if rtc.pic != nil { rtc.pic.RequestInterrupt(RTC_IRQ) }
+		//   if rtc.pic != nil { rtc.pic.RaiseIRQ(rtc.GetIRQLine()) }
 	}
 
 	// --- Update-Ended Interrupt ---
@@ -339,14 +346,37 @@ func (rtc *RTCDevice) Tick(elapsedTime time.Duration) {
 	// if (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_UIE) != 0 {
 	//   If one second has passed since last update-ended interrupt:
 	//     rtc.registers[RTC_REG_STATUS_C] |= RTC_REGC_UF | RTC_REGC_IRQF
-	//     if rtc.pic != nil { rtc.pic.RequestInterrupt(RTC_IRQ) }
+	//     if rtc.pic != nil { rtc.pic.RaiseIRQ(rtc.GetIRQLine()) }
 	// }
 
-	// Note: The actual interrupt generation (calling rtc.pic.RequestInterrupt)
+	// Note: The actual interrupt generation (calling rtc.pic.RaiseIRQ)
 	// depends on the PIC being implemented and integrated.
+	// If any of the flags (PF, AF, UF) got set and their respective enable bits (PIE, AIE, UIE) are active,
+	// and the overall interrupt output from RTC is enabled (e.g. not masked by some other condition),
+	// then IRQF in Reg C should be set and PIC signaled.
+
+	// Simplified: if any of PF, AF, UF is set AND corresponding enable is set
+	shouldInterrupt := false
+	if (rtc.registers[RTC_REG_STATUS_C] & RTC_REGC_PF) != 0 && (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_PIE) != 0 {
+		shouldInterrupt = true
+	}
+	if (rtc.registers[RTC_REG_STATUS_C] & RTC_REGC_AF) != 0 && (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_AIE) != 0 {
+		shouldInterrupt = true
+	}
+	if (rtc.registers[RTC_REG_STATUS_C] & RTC_REGC_UF) != 0 && (rtc.registers[RTC_REG_STATUS_B] & RTC_REGB_UIE) != 0 {
+		shouldInterrupt = true
+	}
+
+	if shouldInterrupt {
+		rtc.registers[RTC_REG_STATUS_C] |= RTC_REGC_IRQF // Set master interrupt flag
+		if rtc.pic != nil {
+			// fmt.Printf("RTC: Raising IRQ %d due to event. Reg C: 0x%02X\n", rtc.GetIRQLine(), rtc.registers[RTC_REG_STATUS_C])
+			rtc.pic.RaiseIRQ(rtc.GetIRQLine())
+		}
+	}
 }
 
 // GetIRQLine returns the IRQ line this device would use.
 func (rtc *RTCDevice) GetIRQLine() uint8 {
-	return RTC_IRQ // Standard RTC IRQ is 8
+	return IRQ_RTC // Standard RTC IRQ is 8, defined as IRQ_RTC in pic_constants.go
 }

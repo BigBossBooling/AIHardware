@@ -1,7 +1,7 @@
 package devices
 
 // Base I/O port for COM1
-const COM1_BASE_ADDR uint64 = 0x3F8
+const COM1_BASE_ADDR uint16 = 0x3F8
 
 // Register offsets from the base address
 const (
@@ -16,10 +16,11 @@ const (
 )
 
 // Line Control Register (LCR) bits
-const (
-	LCR_DLAB = 1 << 7 // Divisor Latch Access Bit
-	// Add other LCR bits as needed (e.g., word length, stop bits, parity)
-)
+// LCR_DLAB is defined in pic_constants.go
+// const (
+// 	LCR_DLAB = 1 << 7 // Divisor Latch Access Bit
+// 	// Add other LCR bits as needed (e.g., word length, stop bits, parity)
+// )
 
 // Line Status Register (LSR) bits
 const (
@@ -43,18 +44,19 @@ const (
 )
 
 // Interrupt Identification Register (IIR) bits
-const (
-	IIR_NO_INTERRUPT_PENDING = 0x01
-	IIR_MODEM_STATUS         = 0x00
-	IIR_TX_HOLDING_EMPTY     = 0x02
-	IIR_RX_DATA_AVAILABLE    = 0x04
-	IIR_RX_LINE_STATUS       = 0x06
-	IIR_CHAR_TIMEOUT         = 0x0C // (16550) Character timeout indication
-	// Bits 6 & 7 indicate FIFO enabled status on 16550+
-	IIR_FIFO_ENABLED      = 0xC0 // Both bits set if FIFOs are enabled
-	IIR_FIFO_STATUS_MASK  = 0xC0
-	IIR_INTERRUPT_ID_MASK = 0x0F // Lower 4 bits give the interrupt type
-)
+// These are defined in pic_constants.go
+// const (
+// 	IIR_NO_INTERRUPT_PENDING = 0x01
+// 	IIR_MODEM_STATUS         = 0x00
+// 	IIR_TX_HOLDING_EMPTY     = 0x02
+// 	IIR_RX_DATA_AVAILABLE    = 0x04
+// 	IIR_RX_LINE_STATUS       = 0x06
+// 	IIR_CHAR_TIMEOUT         = 0x0C // (16550) Character timeout indication
+// 	// Bits 6 & 7 indicate FIFO enabled status on 16550+
+// 	IIR_FIFO_ENABLED      = 0xC0 // Both bits set if FIFOs are enabled
+// 	IIR_FIFO_STATUS_MASK  = 0xC0
+// 	IIR_INTERRUPT_ID_MASK = 0x0F // Lower 4 bits give the interrupt type
+// )
 
 // FIFO Control Register (FCR) bits (for 16550 UARTs)
 const (
@@ -70,10 +72,11 @@ const (
 )
 
 // Modem Control Register (MCR) bits
-const (
-	MCR_DTR    = 1 << 0 // Data Terminal Ready
-	MCR_RTS    = 1 << 1 // Request To Send
-	MCR_OUT1   = 1 << 2 // Auxiliary Output 1
-	MCR_OUT2   = 1 << 3 // Auxiliary Output 2 (used to enable interrupts)
-	MCR_LOOP   = 1 << 4 // Loopback Mode
-)
+// These are defined in pic_constants.go
+// const (
+// 	MCR_DTR    = 1 << 0 // Data Terminal Ready
+// 	MCR_RTS    = 1 << 1 // Request To Send
+// 	MCR_OUT1   = 1 << 2 // Auxiliary Output 1
+// 	MCR_OUT2   = 1 << 3 // Auxiliary Output 2 (used to enable interrupts)
+// 	MCR_LOOP   = 1 << 4 // Loopback Mode
+// )

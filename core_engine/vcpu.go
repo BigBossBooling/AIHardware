@@ -2,8 +2,8 @@ package core_engine
 
 import (
 	"fmt"
-	"core_engine/devices" // For serialPort argument in Run
-	"core_engine/hypervisor" // For KVM_EXIT_IO etc.
+	"v-architect/core_engine/devices" // For serialPort argument in Run
+	"v-architect/core_engine/hypervisor" // For KVM_EXIT_IO etc.
 	"syscall" // For ioctl
 	"unsafe" // For unsafe.Pointer
 )
@@ -20,13 +20,13 @@ type VCpu struct {
 // guestMem is passed to allow the VCPU to potentially interact with it directly,
 // though most memory access is handled by KVM.
 func NewVCpu(vmFD int, guestMem []byte) (*VCpu, error) {
-	vcpuFD, err := hypervisor.KVM_CREATE_VCPU(vmFD, 0) // Assuming VCPU ID 0
+	vcpuFD, err := hypervisor.KvmIoctlCreateVcpu(vmFD, 0) // Assuming VCPU ID 0
 	if err != nil {
 		return nil, fmt.Errorf("failed to create VCPU: %w", err)
 	}
 
 	// Map the KVM run structure
-	kvmRunSize, err := hypervisor.KVM_GET_VCPU_MMAP_SIZE()
+	kvmRunSize, err := hypervisor.KvmIoctlGetVcpuMmapSize()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get KVM_RUN mmap size: %w", err)
 	}
@@ -47,54 +47,125 @@ func NewVCpu(vmFD int, guestMem []byte) (*VCpu, error) {
 // SetupRegisters configures initial VCPU registers.
 // This is a placeholder and needs to be implemented based on boot requirements.
 func (vcpu *VCpu) SetupRegisters() error {
-	// Example: Fetch current sregs
-	sregs, err := hypervisor.KVM_GET_SREGS(vcpu.fd)
+	sregs, err := hypervisor.KvmIoctlGetSregs(vcpu.fd)
 	if err != nil {
-		return fmt.Errorf("KVM_GET_SREGS failed: %w", err)
+		return fmt.Errorf("KVM_GET_SREGS failed for initial read: %w", err)
 	}
 
-	// Modify sregs for protected mode or long mode entry as needed
-	// For a minimal boot, CS is often set to a real-mode segment
-	sregs.Cs.Base = 0
-	sregs.Cs.Selector = 0 // Or a specific real mode segment like 0xF000 for BIOS
+	// Setup for Real Mode execution at 07C0:0000 (linear 0x7C00)
+	// CS: Segment a MBR is typically loaded into and executed from.
+	// BIOS loads MBR at 0000:7C00. CS=0, IP=0x7C00.
+	// Or, set CS=0x07C0, IP=0x0000. Linear address = (CS << 4) + IP.
+	// (0x07C0 << 4) + 0x0000 = 0x7C00. This is a common setup.
+	sregs.Cs.Base = 0x0000 // For real mode, base is often 0 for segments selectors that are 0,
+	                       // or selector * 16 if selector is non-zero.
+	                       // KVM might expect base = selector << 4 for real mode.
+	sregs.Cs.Selector = 0x07C0
+	sregs.Cs.Limit = 0xFFFF
+	sregs.Cs.Type = 0x0B    // Code, Execute/Read, Accessed
+	sregs.Cs.Present = 1
+	sregs.Cs.Dpl = 0
+	sregs.Cs.Db = 0         // 16-bit segment
+	sregs.Cs.S = 1          // Code or Data segment
+	sregs.Cs.L = 0          // Not long mode
+	sregs.Cs.G = 0          // Byte granularity
 
-	// TODO: Set up other segments (DS, ES, SS), GDT, IDT, CR0 (e.g., to enable PE bit)
-	// For now, we rely on KVM defaults or minimal changes.
+	// Other segments (DS, ES, SS) typically point to 0x0000 base in real mode after MBR load.
+	// Selector 0x0000, Base 0x0000.
+	dataSeg := hypervisor.KvmSegment{
+		Base:     0x0000,
+		Selector: 0x0000,
+		Limit:    0xFFFF,
+		Type:     0x03, // Data, Read/Write, Accessed
+		Present:  1,
+		Dpl:      0,
+		Db:       0,    // 16-bit
+		S:        1,
+		L:        0,
+		G:        0,
+	}
+	sregs.Ds = dataSeg
+	sregs.Es = dataSeg
+	sregs.Ss = dataSeg // Stack segment also typically 0000:xxxx
 
-	if err := hypervisor.KVM_SET_SREGS(vcpu.fd, sregs); err != nil {
-		return fmt.Errorf("KVM_SET_SREGS failed: %w", err)
+	// Ensure CR0.PE = 0 for real mode (KVM default for new VCPU is real mode)
+	// sregs.Cr0 &= ^uint64(1) // Clear PE bit. KVM usually starts VCPU in real mode.
+	// We can read CR0 first if we want to be sure, but KVM default should be fine.
+
+	if err := hypervisor.KvmIoctlSetSregs(vcpu.fd, sregs); err != nil {
+		return fmt.Errorf("KVM_SET_SREGS failed for boot setup: %w", err)
 	}
 
 	// Setup general purpose registers (RIP, RSP, RFLAGS)
-	regs, err := hypervisor.KVM_GET_REGS(vcpu.fd)
+	regs, err := hypervisor.KvmIoctlGetRegs(vcpu.fd)
 	if err != nil {
-		return fmt.Errorf("KVM_GET_REGS failed: %w", err)
+		return fmt.Errorf("KVM_GET_REGS failed for initial read: %w", err)
 	}
 
-	// Example: Set initial instruction pointer (RIP) to where guest code is loaded
-	// For a typical PC boot, this might be 0xFFF0 (BIOS reset vector)
-	// Or for custom loaded code, the entry point of that code.
-	regs.Rip = 0x0 // Placeholder, needs actual entry point
-	regs.Rsp = 0x8000 // Example stack pointer, adjust as needed
-	regs.Rflags = 0x2 // Initial RFLAGS, typically with IF=0
+	regs.Rip = 0x0000    // IP part for CS=0x07C0 -> effective address 0x7C00
+	regs.Rsp = 0x7C00    // Stack pointer, grows downwards from just below MBR.
+	                     // Or 0xFFFE, a common initial real-mode SP.
+	                     // For MBR, often set by MBR itself if needed. 0x7C00 is simple.
+	regs.Rflags = 0x2    // Initial RFLAGS, typically with IF=0 (interrupts disabled)
+	// Other GPRs (RAX, RBX etc.) are often 0 or depend on BIOS values (e.g. DL=drive).
+	// For a minimal bootloader, these can be zero.
 
-	if err := hypervisor.KVM_SET_REGS(vcpu.fd, regs); err != nil {
-		return fmt.Errorf("KVM_SET_REGS failed: %w", err)
+	if err := hypervisor.KvmIoctlSetRegs(vcpu.fd, regs); err != nil {
+		return fmt.Errorf("KVM_SET_REGS failed for boot setup: %w", err)
 	}
 
-	fmt.Println("VCPU registers configured (minimal).")
+	fmt.Println("VCPU registers configured for bootloader at 07C0:0000 (linear 0x7C00).")
 	return nil
 }
 
 
 // Run starts the VCPU execution loop.
-// It passes devices to handle KVM_EXIT_IO.
-func (vcpu *VCpu) Run(serialPort *devices.SerialPortDevice, pit *devices.PITDevice, rtc *devices.RTCDevice) error {
+// It passes devices to handle KVM_EXIT_IO and the PIC for interrupt checks.
+func (vcpu *VCpu) Run(
+	serialPort *devices.SerialPortDevice,
+	pit *devices.PITDevice,
+	rtc *devices.RTCDevice,
+	pic *devices.PICController,
+) error {
 	fmt.Println("VCPU run loop starting...")
 	for {
-		if _, err := hypervisor.KVM_RUN(vcpu.fd); err != nil {
+		// Before running, check for pending interrupts from PIC
+		// This is a simplified check. KVM has more advanced ways to handle this (e.g. KVM_INTERRUPT ioctl before KVM_RUN)
+		// or checking vcpu.kvmRun.RequestInterruptWindow.
+		// For now, we check PIC and inject if needed.
+		if pic.HasPendingInterrupt() {
+			if (vcpu.kvmRun.ReadyForInterruptInjection == 1) || (vcpu.kvmRun.IfFlag == 1) { // Check if guest IF flag is set
+				vector, ok := pic.GetInterruptVector()
+				if ok {
+					// fmt.Printf("VCPU: PIC has pending interrupt. Vector: 0x%02X. Injecting...\n", vector)
+					if err := hypervisor.KvmIoctlInterrupt(vcpu.fd, vector); err != nil {
+						// Log error but attempt to continue. This might be problematic.
+						fmt.Printf("Error injecting KVM interrupt (vector 0x%02X): %v\n", vector, err)
+					}
+					// After attempting injection, KVM_RUN should be called.
+					// The interrupt might not be taken immediately if conditions (like IF=0) prevent it.
+				}
+			}
+		}
+
+		if _, err := hypervisor.KvmIoctlRun(vcpu.fd); err != nil {
 			return fmt.Errorf("KVM_RUN failed: %w", err)
 		}
+
+		// After KVM_RUN, check again for interrupts that might have been unblocked or newly asserted.
+		// This is particularly relevant if KVM_RUN exited for a reason other than interrupt processing.
+		if pic.HasPendingInterrupt() {
+			if (vcpu.kvmRun.ReadyForInterruptInjection == 1) || (vcpu.kvmRun.IfFlag == 1) {
+				vector, ok := pic.GetInterruptVector()
+				if ok {
+					// fmt.Printf("VCPU (post-run): PIC has pending interrupt. Vector: 0x%02X. Injecting...\n", vector)
+					if err := hypervisor.KvmIoctlInterrupt(vcpu.fd, vector); err != nil {
+						fmt.Printf("Error injecting KVM interrupt post-run (vector 0x%02X): %v\n", vector, err)
+					}
+				}
+			}
+		}
+
 
 		switch vcpu.kvmRun.ExitReason {
 		case hypervisor.KVM_EXIT_HLT:
@@ -114,7 +185,7 @@ func (vcpu *VCpu) Run(serialPort *devices.SerialPortDevice, pit *devices.PITDevi
 
 			// KVM_EXIT_IO for string operations might have count > 1
 			// For now, we assume count == 1 for simplicity, as most basic device I/O is not string I/O.
-			if count != 1 && !(port == devices.PIT_COUNTER0_PORT || port == devices.PIT_COUNTER1_PORT || port == devices.PIT_COUNTER2_PORT || port == devices.PIT_COMMAND_PORT || port == devices.RTC_INDEX_PORT || port == devices.RTC_DATA_PORT || (port >= devices.COM1_BASE_ADDR && port < devices.COM1_BASE_ADDR+8) ) {
+			if count != 1 && !(port == devices.PIT_CHANNEL0_DATA || port == devices.PIT_CHANNEL1_DATA || port == devices.PIT_CHANNEL2_DATA || port == devices.PIT_COMMAND_REG || port == devices.RTC_INDEX_PORT || port == devices.RTC_DATA_PORT || (port >= devices.COM1_BASE_ADDR && port < devices.COM1_BASE_ADDR+8) ) {
 				// Log if count is not 1 for an I/O operation we expect to be singular.
 				// This is more of a sanity check for non-string I/O.
 				// String I/O (rep insb/outsb) would need a loop here.
@@ -133,7 +204,7 @@ func (vcpu *VCpu) Run(serialPort *devices.SerialPortDevice, pit *devices.PITDevi
 						fmt.Printf("Serial Port I/O Error on port 0x%x: %v\n", port, err)
 					}
 				}
-			} else if (port >= devices.PIT_COUNTER0_PORT && port <= devices.PIT_COMMAND_PORT) || port == devices.SYSTEM_CONTROL_PORT_B { // PIT Range + Port 0x61
+			} else if (port >= devices.PIT_CHANNEL0_DATA && port <= devices.PIT_COMMAND_REG) || port == devices.SYSTEM_CONTROL_PORT_B { // PIT Range + Port 0x61
 				if pit != nil {
 					val, err = pit.HandleIO(port, dataSlice, isWrite)
 					if err != nil {

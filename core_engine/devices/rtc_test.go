@@ -6,7 +6,7 @@ import (
 )
 
 func TestRTCNewRTCDevice(t *testing.T) {
-	rtc := NewRTCDevice()
+	rtc := NewRTCDevice(nil)
 	if rtc == nil {
 		t.Fatal("NewRTCDevice returned nil")
 	}
@@ -24,7 +24,7 @@ func TestRTCNewRTCDevice(t *testing.T) {
 }
 
 func TestRTCIndexAndDataPorts(t *testing.T) {
-	rtc := NewRTCDevice()
+	rtc := NewRTCDevice(nil)
 
 	// Select RTC_REG_MONTH (0x08)
 	testIndex := byte(RTC_REG_MONTH)
@@ -103,7 +103,7 @@ func TestRTCIndexAndDataPorts(t *testing.T) {
 }
 
 func TestRTCStatusRegisters(t *testing.T) {
-	rtc := NewRTCDevice()
+	rtc := NewRTCDevice(nil)
 
 	// Test Status Register B: Set to Binary, 12-hour mode, PIE enabled
 	newRegB := byte(RTC_REGB_DM | RTC_REGB_PIE) // Binary, 12-hour (0), PIE
@@ -129,7 +129,7 @@ func TestRTCStatusRegisters(t *testing.T) {
 	// Test Status Register A: Change Rate Select
 	originalRegA := rtc.registers[RTC_REG_STATUS_A]
 	newRateSelect := byte(0x0A) // Example rate
-	newRegA := (originalRegA & ^RTC_REGA_RATE_MASK) | newRateSelect
+	newRegA := (originalRegA & (^RTC_REGA_RATE_MASK & 0xFF)) | newRateSelect // Fixed NOT overflow
 
 	_, err = rtc.HandleIO(RTC_INDEX_PORT, []byte{RTC_REG_STATUS_A}, true)
 	if err != nil { t.Fatalf("Error setting index to RTC_REG_STATUS_A: %v", err) }
@@ -140,7 +140,8 @@ func TestRTCStatusRegisters(t *testing.T) {
 	// Check that only RS bits changed, DV and UIP (if it were managed and set) are preserved
 	// Our writeRegister for RegA ensures DV part is preserved from original, UIP is masked out on read.
 	// So, the value should be (original_DV_bits | newRateSelect)
-	finalRegA := (originalRegA & ^RTC_REGA_RATE_MASK & ^RTC_REGA_UIP) | newRateSelect
+	// Also apply & 0xFF to ^RTC_REGA_UIP
+	finalRegA := (originalRegA & (^RTC_REGA_RATE_MASK & 0xFF) & (^RTC_REGA_UIP & 0xFF)) | newRateSelect
 	if rtc.registers[RTC_REG_STATUS_A] != finalRegA {
 		t.Errorf("RTC_REG_STATUS_A: Expected 0x%02X, got 0x%02X", finalRegA, rtc.registers[RTC_REG_STATUS_A])
 	}
@@ -181,11 +182,11 @@ func TestRTCStatusRegisters(t *testing.T) {
 }
 
 func TestRTCTimeDateBCDvsBinary(t *testing.T) {
-	rtc := NewRTCDevice()
+	rtc := NewRTCDevice(nil) // Added nil for InterruptRaiser
 	now := time.Now()
 
 	// Case 1: BCD mode (default)
-	rtc.registers[RTC_REG_STATUS_B] &= ^RTC_REGB_DM // Ensure BCD mode
+	rtc.registers[RTC_REG_STATUS_B] &= (^RTC_REGB_DM & 0xFF) // Ensure BCD mode; Fixed NOT overflow
 
 	_, err := rtc.HandleIO(RTC_INDEX_PORT, []byte{RTC_REG_HOURS}, true)
 	if err != nil { t.Fatalf("Error setting index to RTC_REG_HOURS: %v", err) }
@@ -229,9 +230,9 @@ func TestRTCTimeDateBCDvsBinary(t *testing.T) {
 }
 
 func TestRTC12HourMode(t *testing.T) {
-	rtc := NewRTCDevice()
-	rtc.registers[RTC_REG_STATUS_B] &= ^RTC_REGB_24H // Set 12-hour mode
-	rtc.registers[RTC_REG_STATUS_B] &= ^RTC_REGB_DM  // Ensure BCD mode for easier comparison
+	rtc := NewRTCDevice(nil) // Added nil for InterruptRaiser
+	rtc.registers[RTC_REG_STATUS_B] &= (^RTC_REGB_24H & 0xFF) // Set 12-hour mode; Fixed NOT overflow
+	rtc.registers[RTC_REG_STATUS_B] &= (^RTC_REGB_DM & 0xFF)  // Ensure BCD mode for easier comparison; Fixed NOT overflow
 
 	_, err := rtc.HandleIO(RTC_INDEX_PORT, []byte{RTC_REG_HOURS}, true)
 	if err != nil { t.Fatalf("Error setting index to RTC_REG_HOURS: %v", err) }
@@ -278,13 +279,13 @@ func TestRTC12HourMode(t *testing.T) {
 // TODO: Test SET bit in Register B inhibiting writes to time/date registers.
 
 func TestRTCSetBitInhibitsWrites(t *testing.T) {
-	rtc := NewRTCDevice()
+	rtc := NewRTCDevice(nil) // Added nil for InterruptRaiser
 
 	// Enable SET bit in Register B
 	rtc.registers[RTC_REG_STATUS_B] |= RTC_REGB_SET
 
 	// Attempt to write to RTC_REG_SECONDS (should be inhibited)
-	originalSeconds := rtc.registers[RTC_REG_SECONDS] // May not be useful as it's dynamic
+	// originalSeconds := rtc.registers[RTC_REG_SECONDS] // May not be useful as it's dynamic; Commented out
 	_, err := rtc.HandleIO(RTC_INDEX_PORT, []byte{RTC_REG_SECONDS}, true)
 	if err != nil { t.Fatalf("Error setting index to RTC_REG_SECONDS: %v", err) }
 
@@ -294,6 +295,8 @@ func TestRTCSetBitInhibitsWrites(t *testing.T) {
 	// Read back seconds. It should *not* be 0x55. It should be current time.
 	// This test is a bit weak because current time is dynamic.
 	// A better check: store a non-time CMOS value, try to change it.
+	// We don't explicitly check the value of seconds after write attempt due to its dynamic nature.
+	// The main check is for a non-time CMOS byte below.
 
 	cmosTestIndex := byte(0x20) // Some unused CMOS byte
 	rtc.registers[cmosTestIndex] = 0xAA
@@ -313,7 +316,7 @@ func TestRTCSetBitInhibitsWrites(t *testing.T) {
 
 	// Writes to Reg A and B should still be allowed
 	originalRegA := rtc.registers[RTC_REG_STATUS_A]
-	newRegAVal := byte( (originalRegA & ^RTC_REGA_RATE_MASK) | 0x07 ) // Change rate select
+	newRegAVal := byte( (originalRegA & (^RTC_REGA_RATE_MASK & 0xFF)) | 0x07 ) // Change rate select; Fixed NOT overflow
 	_, err = rtc.HandleIO(RTC_INDEX_PORT, []byte{RTC_REG_STATUS_A}, true)
 	if err != nil { t.Fatalf("Error setting index to RTC_REG_STATUS_A: %v", err) }
 	_, err = rtc.HandleIO(RTC_DATA_PORT, []byte{newRegAVal}, true)

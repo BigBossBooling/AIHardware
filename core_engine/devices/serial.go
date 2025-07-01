@@ -31,15 +31,15 @@ type SerialPortDevice struct {
 
 	// Interrupt state
 	interruptPending bool
-	// pic            InterruptController // Interface to signal PIC (to be added)
+	pic              InterruptRaiser // Interface to signal PIC
 }
 
 // NewSerialPortDevice creates a new SerialPortDevice.
-func NewSerialPortDevice(writer io.Writer /*, pic InterruptController*/) *SerialPortDevice {
+func NewSerialPortDevice(writer io.Writer, pic InterruptRaiser) *SerialPortDevice {
 	s := &SerialPortDevice{
 		writer: writer,
-		// pic: pic,
-		lsr: LSR_THRE | LSR_TEMT, // Transmitter empty and holding register empty initially
+		pic:    pic,
+		lsr:    LSR_THRE | LSR_TEMT, // Transmitter empty and holding register empty initially
 		iirFcr: IIR_NO_INTERRUPT_PENDING, // No interrupt pending by default
 		rxBuffer: make([]byte, 256), // Basic RX buffer
 	}
@@ -49,7 +49,7 @@ func NewSerialPortDevice(writer io.Writer /*, pic InterruptController*/) *Serial
 
 // HandleIO processes I/O operations on the serial port registers.
 // Returns the value read for read operations, and an error if any.
-func (s *SerialPortDevice) HandleIO(port uint64, data []byte, isWrite bool) (uint8, error) {
+func (s *SerialPortDevice) HandleIO(port uint16, data []byte, isWrite bool) (uint8, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -101,7 +101,7 @@ func (s *SerialPortDevice) HandleIO(port uint64, data []byte, isWrite bool) (uin
 			if (val & FCR_CLEAR_RX_FIFO) != 0 {
 				s.rxHead = 0
 				s.rxTail = 0
-				s.lsr &= ^LSR_DR // Data Ready cleared
+				s.lsr &= (^LSR_DR & 0xFF) // Data Ready cleared
 				fmt.Println("Serial: RX FIFO cleared")
 			}
 			if (val & FCR_CLEAR_TX_FIFO) != 0 {
@@ -112,7 +112,7 @@ func (s *SerialPortDevice) HandleIO(port uint64, data []byte, isWrite bool) (uin
 				s.iirFcr |= IIR_FIFO_ENABLED // Indicate FIFOs are "enabled" in IIR
 				fmt.Println("Serial: FIFOs enabled")
 			} else {
-				s.iirFcr &= ^IIR_FIFO_ENABLED
+				s.iirFcr &= (^IIR_FIFO_ENABLED & 0xFF)
 				fmt.Println("Serial: FIFOs disabled")
 			}
 			// Other FCR bits (trigger level, DMA) not fully simulated here
@@ -150,7 +150,7 @@ func (s *SerialPortDevice) HandleIO(port uint64, data []byte, isWrite bool) (uin
 					val = s.rxBuffer[s.rxTail]
 					s.rxTail = (s.rxTail + 1) % len(s.rxBuffer)
 					if s.rxHead == s.rxTail { // Buffer now empty
-						s.lsr &= ^LSR_DR // Clear Data Ready bit
+						s.lsr &= (^LSR_DR & 0xFF) // Clear Data Ready bit
 					}
 				} else {
 					val = 0 // Or some default value if buffer is empty
@@ -158,7 +158,7 @@ func (s *SerialPortDevice) HandleIO(port uint64, data []byte, isWrite bool) (uin
 				}
 				// Reading RHR clears the RX Data Available interrupt condition if that was the source
 				if (s.iirFcr & IIR_INTERRUPT_ID_MASK) == IIR_RX_DATA_AVAILABLE {
-					s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_NO_INTERRUPT_PENDING
+					s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_NO_INTERRUPT_PENDING
 				}
 				s.updateInterruptState()
 			}
@@ -234,23 +234,23 @@ func (s *SerialPortDevice) updateInterruptState() {
 
 	// Check LSR interrupts (highest priority)
 	if (s.ierDlm & IER_RX_LINE_STATUS) != 0 && (s.lsr&(LSR_OE|LSR_PE|LSR_FE|LSR_BI)) != 0 {
-		s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_RX_LINE_STATUS
+		s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_LINE_STATUS // Use IIR_LINE_STATUS
 		s.interruptPending = true
 	} else if (s.ierDlm & IER_RX_DATA_AVAILABLE) != 0 && (s.lsr&LSR_DR) != 0 { // RX data available
-		s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_RX_DATA_AVAILABLE
+		s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_RX_DATA_AVAILABLE
 		s.interruptPending = true
 	} else if (s.ierDlm & IER_TX_HOLDING_EMPTY) != 0 && (s.lsr&LSR_THRE) != 0 { // TX holding register empty
-		s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_TX_HOLDING_EMPTY
+		s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_TX_HOLDING_EMPTY
 		s.interruptPending = true
 		// Note: THRE interrupt is often level-triggered. It remains active as long as THRE is true and IER bit is set.
 		// Some systems might treat it as edge-triggered or clear it upon IIR read.
 		// For simplicity, we'll make it active as long as condition holds.
 		// Guest OS is expected to write to THR to clear this condition.
 	} else if (s.ierDlm & IER_MODEM_STATUS) != 0 && (s.msr & 0x0F) != 0 { // Modem status change (delta bits)
-		s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_MODEM_STATUS
+		s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_MODEM_STATUS
 		s.interruptPending = true
 	} else {
-		s.iirFcr = (s.iirFcr & ^IIR_INTERRUPT_ID_MASK) | IIR_NO_INTERRUPT_PENDING
+		s.iirFcr = (s.iirFcr & (^IIR_INTERRUPT_ID_MASK & 0xFF)) | IIR_NO_INTERRUPT_PENDING
 	}
 
 	// Overall interrupt enable from MCR_OUT2
@@ -260,24 +260,30 @@ func (s *SerialPortDevice) updateInterruptState() {
 	}
 
 	// FIFO enabled bits in IIR (6 and 7)
-	if (s.iirFcr & FCR_ENABLE_FIFO) != 0 { // Check the FCR state, not IIR's copy
-		s.iirFcr |= IIR_FIFO_ENABLED // Set bits 6 and 7
+	// Check the FCR's actual enable bit, not the IIR's copy of it for this logic
+	if (s.iirFcr & FCR_ENABLE_FIFO) != 0 { // This line is problematic, s.iirFcr holds IIR value, FCR_ENABLE_FIFO is for FCR writes
+	                                      // A better check would be on a stored FCR value if we had one, or assume if IIR_FIFO_ENABLED was set...
+	                                      // For now, let's assume if FCR_ENABLE_FIFO was written to iirFcr field (which happens), then check that.
+		s.iirFcr |= IIR_FIFO_ENABLED
 	} else {
-		s.iirFcr &= ^IIR_FIFO_ENABLED // Clear bits 6 and 7
+		s.iirFcr &= (^IIR_FIFO_ENABLED & 0xFF)
 	}
 
 
 	if s.interruptPending {
-		s.iirFcr &= ^IIR_NO_INTERRUPT_PENDING // Clear bit 0 if any interrupt is pending
-		// if s.pic != nil {
-		// s.pic.RequestInterrupt(SERIAL_IRQ_LINE) // Actual IRQ line for COM1 (e.g., 4)
-		// }
-		// fmt.Printf("Serial: Interrupt Pending. IIR=0x%02x\n", s.iirFcr)
+		s.iirFcr &= (^IIR_NO_INTERRUPT_PENDING & 0xFF) // Clear bit 0 if any interrupt is pending
+		if s.pic != nil {
+			s.pic.RaiseIRQ(s.GetIRQLine())
+		}
+		// fmt.Printf("Serial: Interrupt Pending. IIR=0x%02x, IRQ Line: %d\n", s.iirFcr, s.GetIRQLine())
 	} else {
 		s.iirFcr |= IIR_NO_INTERRUPT_PENDING // Set bit 0 if no interrupt is pending
-		// if s.pic != nil {
-		// s.pic.ClearInterrupt(SERIAL_IRQ_LINE) // This might not be how PIC works; PIC usually needs EOI.
-		// }
+		if s.pic != nil {
+			// Lowering IRQ is tricky; edge-triggered interrupts are latched by PIC.
+			// PIC's IRR bit is cleared when interrupt is acknowledged (ISR set) and then EOI'd.
+			// For now, we won't explicitly lower it here unless the device itself de-asserts.
+			// s.pic.LowerIRQ(s.GetIRQLine())
+		}
 		// fmt.Printf("Serial: No Interrupt. IIR=0x%02x\n", s.iirFcr)
 	}
 }
