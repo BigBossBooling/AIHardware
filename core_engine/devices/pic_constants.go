@@ -42,7 +42,14 @@ const (
 	IRQ_FLOPPY   = 6
 	IRQ_LPT1     = 7
 	IRQ_RTC      = 8 // Real Time Clock (PIC2)
-	// IRQs 9-15 are for PIC2
+	// IRQs 9-15 are for PIC2:
+	// IRQ 9: Free / NIC / SCSI
+	// IRQ 10: Free / NIC / SCSI
+	// IRQ 11: Free / NIC / SCSI / USB
+	// IRQ 12: PS/2 Mouse
+	// IRQ 13: FPU Co-processor
+	IRQ_PRIMARY_ATA = 14 // Primary IDE Hard Disk Controller
+	IRQ_SECONDARY_ATA = 15 // Secondary IDE Hard Disk Controller
 )
 
 // RTC I/O Ports

@@ -126,6 +126,7 @@ func (vcpu *VCpu) Run(
 	pit *devices.PITDevice,
 	rtc *devices.RTCDevice,
 	pic *devices.PICController,
+	ata *devices.ATADevice, // Added ATA device
 ) error {
 	fmt.Println("VCPU run loop starting...")
 	for {
@@ -216,6 +217,15 @@ func (vcpu *VCpu) Run(
 					val, err = rtc.HandleIO(port, dataSlice, isWrite)
 					if err != nil {
 						fmt.Printf("RTC I/O Error on port 0x%x: %v\n", port, err)
+					}
+				}
+			// Check ATA device ports (Primary channel: 0x1F0-0x1F7 and 0x3F6-0x3F7)
+			} else if (port >= devices.ATA_PRIMARY_IO_BASE && port <= devices.ATA_PRIMARY_IO_BASE+7) ||
+				(port >= devices.ATA_PRIMARY_CTL_BASE && port <= devices.ATA_PRIMARY_CTL_BASE+1) { // +1 to include 0x3F7 if used. DeviceControl is 0x3F6.
+				if ata != nil {
+					val, err = ata.HandleIO(port, dataSlice, isWrite)
+					if err != nil {
+						fmt.Printf("ATA I/O Error on port 0x%x: %v\n", port, err)
 					}
 				}
 			} else {

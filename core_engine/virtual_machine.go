@@ -25,6 +25,7 @@ type VirtualMachine struct {
 	pitDevice  *devices.PITDevice        // Programmable Interval Timer
 	rtcDevice  *devices.RTCDevice        // Real-Time Clock
 	pic        *devices.PICController    // Programmable Interrupt Controller
+	ataDevice  *devices.ATADevice        // Primary ATA Controller
 	// Add other devices here as they are implemented
 }
 
@@ -91,6 +92,18 @@ func CreateVM(memorySize uint64, bootloader []byte) (*VirtualMachine, error) {
 	pitDevice := devices.NewPITDevice(pic)                     // Pass PIC as InterruptRaiser
 	rtcDevice := devices.NewRTCDevice(pic)                     // Pass PIC as InterruptRaiser
 
+	// Initialize ATA device with an in-memory disk
+	diskSize := uint64(16 * 1024 * 1024) // 16MB disk
+	memDisk, err := devices.NewMemoryDiskImage(diskSize, devices.ATA_SECTOR_SIZE)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create memory disk image: %w", err)
+	}
+	ataDevice, err := devices.NewATADevice(memDisk, pic, devices.IRQ_PRIMARY_ATA) // Assuming IRQ_PRIMARY_ATA = 14
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ATA device: %w", err)
+	}
+
+
 	// Create and initialize the VCPU
 	vcpu, err := NewVCpu(vmFD, guestMem) // Pass guestMem for VCPU to access it
 	if err != nil {
@@ -106,6 +119,7 @@ func CreateVM(memorySize uint64, bootloader []byte) (*VirtualMachine, error) {
 		pitDevice:  pitDevice,
 		rtcDevice:  rtcDevice,
 		pic:        pic,
+		ataDevice:  ataDevice,
 	}
 
 	// Configure VCPU registers (simplified for example)
@@ -122,7 +136,7 @@ func (vm *VirtualMachine) Run() error {
 	fmt.Println("VM starting...")
 	// Pass all relevant devices to the VCPU's run loop.
 	// The VCPU will need to query the PIC for pending interrupts.
-	return vm.vcpu.Run(vm.serialPort, vm.pitDevice, vm.rtcDevice, vm.pic)
+	return vm.vcpu.Run(vm.serialPort, vm.pitDevice, vm.rtcDevice, vm.pic, vm.ataDevice)
 }
 
 // Stop cleans up the virtual machine resources.
