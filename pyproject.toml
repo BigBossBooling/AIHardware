@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "v-architect"
+version = "0.1.0"
+authors = [
+  { name="Josephis K. Wade", email="architect@infinitec.llc" },
+]
+description = "V-Architect: The Universal Virtualization Canvas – Sculpting Digital Realities"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Boost Software License 1.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Boost Software License 1.0 (BSL-1.0)",
+    "Operating System :: OS Independent",
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Topic :: System :: Emulators",
+    "Topic :: System :: Virtualization",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/user/v-architect" # Placeholder
+"Bug Tracker" = "https://github.com/user/v-architect/issues" # Placeholder

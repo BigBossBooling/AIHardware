@@ -86,9 +86,50 @@ V-Architect is designed for iterative development, with clear phases for detaile
 
 ---
 
-## Getting Started (Conceptual)
+## Getting Started
 
-*(This section will outline practical steps for early adopters and developers to engage with the project, explore its conceptual designs, and eventually contribute to its development and testing.)*
+This guide will walk you through setting up a development environment to contribute to V-Architect.
+
+### Prerequisites
+
+*   Python 3.8 or higher
+*   `pip` and `venv` (usually included with Python)
+
+### Setup Instructions
+
+1.  **Clone the Repository:**
+    (First, you'll need to clone the project repository to your local machine.)
+
+2.  **Create and Activate a Virtual Environment:**
+    It is highly recommended to use a virtual environment to manage project dependencies and avoid conflicts with other projects.
+
+    ```bash
+    # Create a virtual environment (e.g., named .venv)
+    python3 -m venv .venv
+
+    # Activate the virtual environment
+    # On macOS and Linux:
+    source .venv/bin/activate
+    # On Windows:
+    # .\.venv\Scripts\activate
+    ```
+
+3.  **Install Dependencies:**
+    Install the project in "editable" mode, which allows you to modify the source code and have the changes immediately reflected. This command also installs the testing dependencies.
+
+    ```bash
+    pip install -e .[test]
+    ```
+
+### Running Tests
+
+Once you have the project installed, you can run the test suite to verify the installation and ensure everything is working correctly.
+
+```bash
+pytest
+```
+
+You should see the tests pass, confirming your environment is set up correctly. You are now ready to contribute to V-Architect!
 
 ---
 
