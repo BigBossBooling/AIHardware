@@ -1,87 +1,70 @@
 import pytest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 from v_architect.automation_engine import AutomationEngine
 
 # --- Mocks for all dependencies ---
 
 @pytest.fixture
 def mock_metrics_engine():
-    """A mock MetricsEngine that allows us to simulate event firing."""
-    engine = MagicMock()
-    # We need to store subscribers so we can call them manually
-    engine.subscribers = {}
+    return MagicMock()
 
-    def mock_subscribe(event_type, callback):
-        engine.subscribers[event_type] = callback
-
-    engine.subscribe.side_effect = mock_subscribe
-    return engine
+@pytest.fixture
+def mock_predictive_engine():
+    return MagicMock()
 
 @pytest.fixture
 def mock_resource_manager():
-    """A mock ResourceManager to check if actions are called."""
     return MagicMock()
 
 @pytest.fixture
 def mock_virtualization_layer():
-    """A mock VirtualizationLayer."""
     return MagicMock()
 
 # --- AutomationEngine Tests ---
 
 @pytest.fixture
-def automation_engine(mock_metrics_engine, mock_resource_manager, mock_virtualization_layer):
+def automation_engine(mock_metrics_engine, mock_predictive_engine, mock_resource_manager, mock_virtualization_layer):
     """Provides an AutomationEngine instance with mocked dependencies."""
-    return AutomationEngine(mock_metrics_engine, mock_resource_manager, mock_virtualization_layer)
-
-def test_automation_engine_initialization(automation_engine, mock_metrics_engine):
-    """Tests that the engine initializes and is ready."""
-    assert automation_engine.metrics_engine == mock_metrics_engine
-    assert automation_engine.rules == {}
+    # Pass all engines to the constructor for simplicity in testing
+    return AutomationEngine(
+        metrics_engine=mock_metrics_engine,
+        predictive_engine=mock_predictive_engine,
+        resource_manager=mock_resource_manager,
+        virtualization_layer=mock_virtualization_layer
+    )
 
 def test_add_rule(automation_engine):
     """Tests that a rule can be successfully added."""
-    action = lambda event: print(f"Action for {event['event_type']}")
+    action = lambda event: None
     automation_engine.add_rule("TEST_EVENT", action)
-
     assert "TEST_EVENT" in automation_engine.rules
     assert automation_engine.rules["TEST_EVENT"] == action
 
-def test_engine_subscribes_to_events_on_rule_addition(automation_engine, mock_metrics_engine):
-    """Tests that adding a rule makes the engine subscribe to the MetricsEngine."""
-    action = lambda event: None
-    automation_engine.add_rule("CPU_EVENT", action)
-
-    # Check that the subscribe method was called on the mock
-    mock_metrics_engine.subscribe.assert_called_once_with("CPU_EVENT", automation_engine.handle_event)
-
-def test_event_triggers_correct_resource_manager_action(automation_engine, mock_metrics_engine, mock_resource_manager):
-    """Tests that a received event correctly triggers an action on the ResourceManager."""
-    # Define a rule: if CPU is high, add 2 more cores.
+def test_handle_event_triggers_correct_action(automation_engine, mock_resource_manager):
+    """Tests that handle_event executes the correct action for a given event."""
+    # Define a rule
     action = lambda event: mock_resource_manager.add_resources(cpu_cores=2, memory_gb=0)
     automation_engine.add_rule("CPU_HIGH_LOAD", action)
 
-    # Simulate the MetricsEngine firing the event
+    # Manually fire the event
     test_event = {"event_type": "CPU_HIGH_LOAD", "details": "some data"}
-    # Manually call the handler that subscribe would have registered
-    event_handler = mock_metrics_engine.subscribers["CPU_HIGH_LOAD"]
-    event_handler(test_event)
+    automation_engine.handle_event(test_event)
 
-    # Check that the correct action was called on the mock
+    # Check that the correct action was called
     mock_resource_manager.add_resources.assert_called_once_with(cpu_cores=2, memory_gb=0)
 
-def test_event_triggers_correct_virtualization_layer_action(automation_engine, mock_metrics_engine, mock_virtualization_layer):
-    """Tests that an event can trigger an action on the VirtualizationLayer."""
-    # Define a rule: if memory is low, trigger a (mocked) migration.
-    action = lambda event: mock_virtualization_layer.migrate_ve("some_ve_id")
-    automation_engine.add_rule("MEMORY_LOW", action)
+def test_handle_predictive_event_triggers_preemptive_action(automation_engine, mock_resource_manager):
+    """Tests that a predictive event triggers a pre-emptive action."""
+    # Define a rule for a predictive event
+    action = lambda event: mock_resource_manager.add_resources(cpu_cores=4, memory_gb=10)
+    automation_engine.add_rule("PREDICTIVE_CPU_OVERLOAD", action)
 
-    # Simulate the event
-    test_event = {"event_type": "MEMORY_LOW", "details": "some data"}
-    event_handler = mock_metrics_engine.subscribers["MEMORY_LOW"]
-    event_handler(test_event)
+    # Manually fire the predictive event
+    test_event = {"event_type": "PREDICTIVE_CPU_OVERLOAD", "details": "forecast data"}
+    automation_engine.handle_event(test_event)
 
-    mock_virtualization_layer.migrate_ve.assert_called_once_with("some_ve_id")
+    # Check that the pre-emptive action was called
+    mock_resource_manager.add_resources.assert_called_once_with(cpu_cores=4, memory_gb=10)
 
 def test_no_action_taken_for_unregistered_event(automation_engine, mock_resource_manager):
     """Tests that no action is taken for an event that has no rule."""

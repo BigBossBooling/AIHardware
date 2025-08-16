@@ -7,10 +7,11 @@ from typing import Callable, Dict, Any
 
 class MetricsEngine:
     """
-    Monitors resource utilization and generates events when thresholds are breached.
+    Monitors resource utilization, stores a history of metrics, and generates
+    events when thresholds are breached.
     """
 
-    def __init__(self, resource_manager, thresholds: Dict[str, Callable[[Dict], bool]]):
+    def __init__(self, resource_manager, thresholds: Dict[str, Callable[[Dict], bool]], history_size: int = 10):
         """
         Initializes the MetricsEngine.
 
@@ -19,10 +20,12 @@ class MetricsEngine:
             thresholds: A dictionary where keys are event types (str) and
                         values are functions that return True if the
                         threshold is breached.
+            history_size: The number of historical data points to maintain.
         """
         self.resource_manager = resource_manager
         self.thresholds = thresholds
         self._subscribers = collections.defaultdict(list)
+        self._history = collections.deque(maxlen=history_size)
 
     def subscribe(self, event_type: str, callback: Callable[[Dict], None]):
         """Subscribes a listener to a specific event type."""
@@ -47,11 +50,17 @@ class MetricsEngine:
 
     def check_metrics(self):
         """
-        Polls the resource manager, checks all thresholds, and fires
-        events for any breached thresholds.
+        Polls the resource manager, stores the data, checks all thresholds,
+        and fires events for any breached thresholds.
         """
         current_utilization = self.resource_manager.get_utilization()
+        # Store a copy to prevent mutation issues if the source is a reference
+        self._history.append(current_utilization.copy())
 
         for event_type, check_func in self.thresholds.items():
             if check_func(current_utilization):
                 self._fire_event(event_type, current_utilization)
+
+    def get_history(self) -> list:
+        """Returns the list of historical utilization data."""
+        return list(self._history)

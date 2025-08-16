@@ -44,6 +44,40 @@ def test_no_event_fired_when_below_threshold(metrics_engine):
 
     assert len(events_fired) == 0
 
+# --- Tests for History Tracking ---
+
+def test_metric_history_is_stored(metrics_engine, mock_manager):
+    """Tests that the engine correctly stores a history of metrics."""
+    # First check
+    mock_manager.set_utilization(cpu_util=10.0, mem_util=20.0)
+    metrics_engine.check_metrics()
+
+    # Second check
+    mock_manager.set_utilization(cpu_util=15.0, mem_util=25.0)
+    metrics_engine.check_metrics()
+
+    history = metrics_engine.get_history()
+    assert len(history) == 2
+    assert history[0]["cpu_utilization_percent"] == 10.0
+    assert history[1]["cpu_utilization_percent"] == 15.0
+
+def test_history_is_rolling(mock_manager):
+    """Tests that the history is a rolling window of a fixed size."""
+    # Create an engine with a small history size
+    small_history_engine = MetricsEngine(mock_manager, {}, history_size=3)
+
+    # Add 5 data points
+    for i in range(5):
+        mock_manager.set_utilization(cpu_util=float(i), mem_util=float(i))
+        small_history_engine.check_metrics()
+
+    history = small_history_engine.get_history()
+    assert len(history) == 3
+    # The history should contain the last 3 data points: 2.0, 3.0, and 4.0
+    assert history[0]["cpu_utilization_percent"] == 2.0
+    assert history[1]["cpu_utilization_percent"] == 3.0
+    assert history[2]["cpu_utilization_percent"] == 4.0
+
 def test_event_fired_when_cpu_threshold_breached(metrics_engine, mock_manager):
     """Tests that an event is fired correctly when CPU utilization breaches a threshold."""
     events_fired = []
