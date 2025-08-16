@@ -1,0 +1,7 @@
+# V-Architect Project Dependencies
+#
+# This file will list the Python packages required to run the V-Architect application.
+# Add one package per line, e.g.:
+# package-name==1.2.3
+#
+# As of the initial commit, there are no dependencies.
