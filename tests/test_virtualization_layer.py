@@ -3,82 +3,69 @@ from v_architect.resource_manager import ResourceManager
 from v_architect.virtualization_layer import VirtualizationLayer, VirtualEnvironment
 
 @pytest.fixture
-def resource_manager():
+def manager():
     """Provides a ResourceManager instance for the tests."""
-    return ResourceManager(total_cpu_cores=8, total_memory_gb=32, total_bandwidth_mbps=1000)
+    return ResourceManager(total_cpu_cores=8, total_memory_gb=32)
 
 @pytest.fixture
-def virtualization_layer(resource_manager):
+def v_layer(manager):
     """Provides a VirtualizationLayer instance linked to a resource manager."""
-    return VirtualizationLayer(resource_manager)
+    return VirtualizationLayer(manager)
 
-def test_virtualization_layer_initialization(virtualization_layer):
-    """Tests that the VirtualizationLayer can be initialized."""
-    assert virtualization_layer is not None
-    assert virtualization_layer.resource_manager is not None
-
-def test_create_virtual_environment_successfully(virtualization_layer, resource_manager):
-    """Tests the successful creation of a new virtual environment."""
-    ve = virtualization_layer.create_ve(cpu_cores=2, memory_gb=4, bandwidth_mbps=100)
+def test_ve_creation_queues_successfully(v_layer):
+    """Tests that creating a VE returns a VE object in a 'pending' state."""
+    ve = v_layer.create_ve(cpu_cores=2, memory_gb=4, priority=5)
     assert ve is not None
     assert isinstance(ve, VirtualEnvironment)
-    assert ve.cpu_cores == 2
-    assert ve.memory_gb == 4
-    assert ve.bandwidth_mbps == 100
-    assert ve.status == "running"
+    assert ve.status == "pending"
+    assert ve.ve_id in v_layer.get_all_ves()
 
-    # Check that resources were deducted from the manager
-    assert resource_manager.available_cpu_cores == 6
-    assert resource_manager.available_memory_gb == 28
+def test_processing_updates_ve_to_running(v_layer, manager):
+    """Tests that after processing the queue, the VE status updates to 'running'."""
+    ve = v_layer.create_ve(cpu_cores=2, memory_gb=4, priority=5)
+    assert ve.status == "pending"
 
-    # Check that the VE is being tracked
-    assert ve.ve_id in virtualization_layer.get_active_ves()
+    # Process the resource manager's queue
+    manager.process_queue()
 
-def test_create_ve_with_insufficient_resources(virtualization_layer, resource_manager):
-    """Tests that creating a VE fails if the resource manager lacks resources."""
-    ve = virtualization_layer.create_ve(cpu_cores=10, memory_gb=4, bandwidth_mbps=100)
-    assert ve is None
+    # Manually trigger a status update in the virtualization layer
+    v_layer.update_ve_statuses()
 
-    # Check that no resources were deducted
-    assert resource_manager.available_cpu_cores == 8
-    assert len(virtualization_layer.get_active_ves()) == 0
+    updated_ve = v_layer.get_ve_details(ve.ve_id)
+    assert updated_ve.status == "running"
+    # Check that the allocation details are now populated
+    assert updated_ve.allocation is not None
 
-def test_destroy_virtual_environment(virtualization_layer, resource_manager):
-    """Tests that destroying a virtual environment releases its resources."""
-    # Create a VE first
-    ve = virtualization_layer.create_ve(cpu_cores=4, memory_gb=8, bandwidth_mbps=200)
-    assert ve is not None
-    assert resource_manager.available_cpu_cores == 4
-    assert resource_manager.available_memory_gb == 24
-    assert len(virtualization_layer.get_active_ves()) == 1
+def test_create_ve_fails_if_request_invalid(v_layer, manager):
+    """Tests that a VE for an unfulfillable request remains pending."""
+    ve = v_layer.create_ve(cpu_cores=100, memory_gb=100, priority=5) # Impossible request
+    manager.process_queue()
+    v_layer.update_ve_statuses()
+
+    # In a more complex system, this might become 'failed'. For now, it stays pending.
+    assert ve.status == "pending"
+
+
+def test_destroy_running_ve_releases_resources(v_layer, manager):
+    """Tests that destroying a 'running' VE releases its resources."""
+    ve = v_layer.create_ve(cpu_cores=4, memory_gb=8, priority=5)
+    manager.process_queue()
+    v_layer.update_ve_statuses()
+    assert v_layer.get_ve_details(ve.ve_id).status == "running"
+    assert manager.available_cpu_cores == 4
 
     # Now destroy it
-    ve_id = ve.ve_id
-    destroyed_successfully = virtualization_layer.destroy_ve(ve_id)
-    assert destroyed_successfully is True
+    destroyed = v_layer.destroy_ve(ve.ve_id)
+    assert destroyed is True
 
     # Check that resources are restored
-    assert resource_manager.available_cpu_cores == 8
-    assert resource_manager.available_memory_gb == 32
+    assert manager.available_cpu_cores == 8
+    assert ve.ve_id not in v_layer.get_all_ves()
 
-    # Check that the VE is no longer tracked
-    assert ve_id not in virtualization_layer.get_active_ves()
-    # Check that the VE object status is updated
-    assert ve.status == "destroyed"
+def test_cannot_destroy_pending_ve(v_layer):
+    """Tests that a 'pending' VE cannot be destroyed (for now)."""
+    ve = v_layer.create_ve(cpu_cores=2, memory_gb=4, priority=5)
+    assert ve.status == "pending"
 
-
-def test_destroy_non_existent_ve(virtualization_layer):
-    """Tests that trying to destroy a non-existent VE fails gracefully."""
-    destroyed_successfully = virtualization_layer.destroy_ve("non-existent-id")
-    assert destroyed_successfully is False
-
-def test_get_ve_details(virtualization_layer):
-    """Tests that we can retrieve the details of a specific virtual environment."""
-    ve = virtualization_layer.create_ve(cpu_cores=1, memory_gb=2, bandwidth_mbps=50)
-    assert ve is not None
-
-    retrieved_ve = virtualization_layer.get_ve_details(ve.ve_id)
-    assert retrieved_ve is not None
-    assert retrieved_ve.ve_id == ve.ve_id
-    assert retrieved_ve.cpu_cores == 1
-    assert retrieved_ve.memory_gb == 2
+    destroyed = v_layer.destroy_ve(ve.ve_id)
+    assert destroyed is False
